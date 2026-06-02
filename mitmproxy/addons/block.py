@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.block` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import ipaddress
 import logging
 
@@ -6,7 +10,13 @@ from mitmproxy.proxy import mode_specs
 
 
 class Block:
+    """
+    `block` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "block_global",
             bool,
@@ -27,6 +37,9 @@ class Block:
         )
 
     def client_connected(self, client):
+        """
+        处理客户端连接建立事件。
+        """
         parts = client.peername[0].rsplit("%", 1)
         address = ipaddress.ip_address(parts[0])
         if isinstance(address, ipaddress.IPv6Address):

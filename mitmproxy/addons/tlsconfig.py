@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.tlsconfig` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import ipaddress
 import logging
 import os
@@ -69,6 +73,8 @@ def _default_ciphers(
     """
     @SECLEVEL=0 is necessary for TLS 1.1 and below to work,
     see https://github.com/pyca/cryptography/issues/9523
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
     """
     if min_tls_version in net_tls.INSECURE_TLS_MIN_VERSIONS:
         return _DEFAULT_CIPHERS_WITH_SECLEVEL_0
@@ -84,12 +90,18 @@ DEFAULT_HOSTFLAGS = (
 
 
 class AppData(TypedDict):
+    """
+    保存 TLS ALPN 协商回调所需的上下文数据。
+    """
     client_alpn: bytes | None
     server_alpn: bytes | None
     http2: bool
 
 
 def alpn_select_callback(conn: SSL.Connection, options: list[bytes]) -> Any:
+    """
+    根据客户端和上游服务器的 ALPN 信息选择最终协商协议。
+    """
     app_data: AppData = conn.get_app_data()
     client_alpn = app_data["client_alpn"]
     server_alpn = app_data["server_alpn"]
@@ -117,6 +129,8 @@ def alpn_select_callback(conn: SSL.Connection, options: list[bytes]) -> Any:
 class TlsConfig:
     """
     This addon supplies the proxy core with the desired OpenSSL connection objects to negotiate TLS.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     certstore: certs.CertStore = None  # type: ignore
@@ -134,6 +148,9 @@ class TlsConfig:
     #  - ssl_verify_upstream_trusted_confdir
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         insecure_tls_min_versions = (
             ", ".join(x.name for x in net_tls.INSECURE_TLS_MIN_VERSIONS[:-1])
             + f" and {net_tls.INSECURE_TLS_MIN_VERSIONS[-1].name}"
@@ -202,13 +219,20 @@ class TlsConfig:
         )
 
     def tls_clienthello(self, tls_clienthello: tls.ClientHelloData):
+        """
+        处理客户端 TLS ClientHello 事件。
+        """
         conn_context = tls_clienthello.context
         tls_clienthello.establish_server_tls_first = (
             conn_context.server.tls and ctx.options.connection_strategy == "eager"
         )
 
     def tls_start_client(self, tls_start: tls.TlsData) -> None:
-        """Establish TLS or DTLS between client and proxy."""
+        """
+        Establish TLS or DTLS between client and proxy.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        """
         if tls_start.ssl_conn is not None:
             return  # a user addon has already provided the pyOpenSSL context.
 
@@ -271,7 +295,11 @@ class TlsConfig:
         tls_start.ssl_conn.set_accept_state()
 
     def tls_start_server(self, tls_start: tls.TlsData) -> None:
-        """Establish TLS or DTLS between proxy and server."""
+        """
+        Establish TLS or DTLS between proxy and server.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        """
         if tls_start.ssl_conn is not None:
             return  # a user addon has already provided the pyOpenSSL context.
 
@@ -377,7 +405,11 @@ class TlsConfig:
         tls_start.ssl_conn.set_connect_state()
 
     def quic_start_client(self, tls_start: quic.QuicTlsData) -> None:
-        """Establish QUIC between client and proxy."""
+        """
+        Establish QUIC between client and proxy.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        """
         if tls_start.settings is not None:
             return  # a user addon has already provided the settings.
         tls_start.settings = quic.QuicTlsSettings()
@@ -418,7 +450,11 @@ class TlsConfig:
         ]
 
     def quic_start_server(self, tls_start: quic.QuicTlsData) -> None:
-        """Establish QUIC between proxy and server."""
+        """
+        Establish QUIC between proxy and server.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        """
         if tls_start.settings is not None:
             return  # a user addon has already provided the settings.
         tls_start.settings = quic.QuicTlsSettings()
@@ -466,9 +502,15 @@ class TlsConfig:
     def running(self):
         # FIXME: We have a weird bug where the contract for configure is not followed and it is never called with
         # confdir or command_history as updated.
+        """
+        在 mitmproxy 完成启动后执行运行期初始化。
+        """
         self.configure("confdir")  # pragma: no cover
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if (
             "certs" in updated
             or "confdir" in updated
@@ -539,6 +581,9 @@ class TlsConfig:
             self._warn_seclevel_missing("server")
 
     def _warn_unsupported_version(self, attribute: str, warn_unbound: bool):
+        """
+        `tlsconfig` addon 的内部辅助方法。
+        """
         val = net_tls.Version[getattr(ctx.options, attribute)]
         supported_versions = [
             v for v in net_tls.Version if net_tls.is_supported_version(v)
@@ -561,6 +606,8 @@ class TlsConfig:
         """
         OpenSSL cipher spec need to specify @SECLEVEL for old TLS versions to work,
         see https://github.com/pyca/cryptography/issues/9523.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if side == "client":
             custom_ciphers = ctx.options.ciphers_client
@@ -580,12 +627,17 @@ class TlsConfig:
             )
 
     def crl_path(self) -> str:
+        """
+        `tlsconfig` addon 中的方法，用于处理 `crl path` 相关逻辑。
+        """
         return f"/mitmproxy-{self.certstore.default_ca.serial}.crl"
 
     def get_cert(self, conn_context: context.Context) -> certs.CertStoreEntry:
         """
         This function determines the Common Name (CN), Subject Alternative Names (SANs) and Organization Name
         our certificate should have and then fetches a matching cert from the certstore.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         altnames: list[x509.GeneralName] = []
         organization: str | None = None
@@ -633,6 +685,9 @@ class TlsConfig:
         )
 
     def request(self, flow: http.HTTPFlow):
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if not flow.live or flow.error or flow.response:
             return
         # Check if a request has a magic CRL token at the end
@@ -645,7 +700,11 @@ class TlsConfig:
 
 
 def _ip_or_dns_name(val: str) -> x509.GeneralName:
-    """Convert a string into either an x509.IPAddress or x509.DNSName object."""
+    """
+    Convert a string into either an x509.IPAddress or x509.DNSName object.
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    """
     try:
         ip = ipaddress.ip_address(val)
     except ValueError:

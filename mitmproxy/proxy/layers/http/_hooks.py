@@ -78,6 +78,13 @@ class HttpConnectHook(commands.StartHook):
     CONNECT requests are HTTP proxy instructions for mitmproxy itself
     and not forwarded. They do not generate the usual HTTP handler events,
     but all requests going over the newly opened connection will.
+
+    收到客户端发来的 HTTP CONNECT 请求。
+
+    手机访问 HTTPS 站点时，系统 HTTP 代理会先发送
+    `CONNECT host:443 HTTP/1.1` 给 mitmproxy。这个 CONNECT 是给代理本身
+    的指令，不会作为普通 HTTP 请求转发；CONNECT 建立后的隧道内请求才会
+    继续触发常规 request/response hook。
     """
 
     flow: http.HTTPFlow
@@ -106,6 +113,11 @@ class HttpConnectedHook(commands.StartHook):
     > [!WARNING]
     > This may fire before an upstream connection has been established
     > if `connection_strategy` is set to `lazy` (default)
+
+    HTTP CONNECT 已经成功。
+
+    对手机代理场景来说，这通常意味着 mitmproxy 已经向手机返回 2xx 响应，
+    后续该 TCP 连接会切换成隧道模式，里面通常继续进行 TLS 握手。
     """
 
     flow: http.HTTPFlow
@@ -117,6 +129,11 @@ class HttpConnectErrorHook(commands.StartHook):
     HTTP CONNECT has failed.
     This can happen when the upstream server is unreachable or proxy authentication is required.
     In contrast to the `error` hook, `flow.error` is not guaranteed to be set.
+
+    HTTP CONNECT 失败。
+
+    例如目标服务器不可达、上游代理拒绝连接，或者代理认证失败。此时不会
+    进入 CONNECT 隧道，客户端会收到错误响应。
     """
 
     flow: http.HTTPFlow

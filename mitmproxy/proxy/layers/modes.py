@@ -22,6 +22,15 @@ else:
 
 
 class HttpProxy(layer.Layer):
+    """
+    显式 HTTP(S) 代理模式的顶层 layer。
+
+    手机把 Wi-Fi 代理指向 mitmproxy 时，TCP 连接首先进入这里。该层本身不
+    解析 HTTP，而是立即交给 `NextLayer`，由 `next_layer` addon 根据首包
+    判断后续应该进入普通 HTTP proxy 解析，还是进入“到代理本身的 TLS”
+    解析（secure web proxy）。
+    """
+
     @expect(events.Start)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
         child_layer = layer.NextLayer(self.context)

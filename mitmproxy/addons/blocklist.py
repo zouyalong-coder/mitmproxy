@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.blocklist` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 from collections.abc import Sequence
 from typing import NamedTuple
 
@@ -10,6 +14,9 @@ from mitmproxy.net.http.status_codes import NO_RESPONSE
 
 
 class BlockSpec(NamedTuple):
+    """
+    表示 blocklist 中的一条过滤规则和对应状态码。
+    """
     matches: flowfilter.TFilter
     status_code: int
 
@@ -20,6 +27,7 @@ def parse_spec(option: str) -> BlockSpec:
 
         /flow-filter/status
 
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
     """
     sep, rem = option[0], option[1:]
 
@@ -37,10 +45,19 @@ def parse_spec(option: str) -> BlockSpec:
 
 
 class BlockList:
+    """
+    `blocklist` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def __init__(self) -> None:
+        """
+        初始化对象状态。
+        """
         self.items: list[BlockSpec] = []
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "block_list",
             Sequence[str],
@@ -55,6 +72,9 @@ class BlockList:
         )
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "block_list" in updated:
             self.items = []
             for option in ctx.options.block_list:
@@ -67,6 +87,9 @@ class BlockList:
                 self.items.append(spec)
 
     def request(self, flow: http.HTTPFlow) -> None:
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if flow.response or flow.error or not flow.live:
             return
 

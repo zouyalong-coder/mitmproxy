@@ -472,6 +472,12 @@ class LocalRedirectorInstance(ServerInstance[mode_specs.LocalMode]):
 
 class RegularInstance(AsyncioServerInstance[mode_specs.RegularMode]):
     def make_top_layer(self, context: Context) -> Layer:
+        """
+        为常规显式代理连接创建顶层 layer。
+
+        手机/浏览器配置 HTTP 代理后连进来的连接会从 `HttpProxy` 开始，随后
+        再由 `NextLayer` 判断是 absolute-form HTTP 请求还是 CONNECT 隧道。
+        """
         return layers.modes.HttpProxy(context)
 
 

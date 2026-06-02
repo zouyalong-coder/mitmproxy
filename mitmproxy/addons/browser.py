@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.browser` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import logging
 import shutil
 import subprocess
@@ -9,6 +13,9 @@ from mitmproxy.log import ALERT
 
 
 def find_executable_cmd(*search_paths) -> list[str] | None:
+    """
+    在系统 PATH 中查找可执行程序，并返回可用于启动的命令参数。
+    """
     for browser in search_paths:
         if shutil.which(browser):
             return [browser]
@@ -17,6 +24,9 @@ def find_executable_cmd(*search_paths) -> list[str] | None:
 
 
 def find_flatpak_cmd(*search_paths) -> list[str] | None:
+    """
+    检测 Flatpak 应用是否存在，并返回对应启动命令。
+    """
     if shutil.which("flatpak"):
         for browser in search_paths:
             if (
@@ -33,11 +43,17 @@ def find_flatpak_cmd(*search_paths) -> list[str] | None:
 
 
 class Browser:
+    """
+    `browser` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     browser: list[subprocess.Popen] = []
     tdir: list[tempfile.TemporaryDirectory] = []
 
     @command.command("browser.start")
     def start(self, browser: str = "chrome") -> None:
+        """
+        `browser` addon 中的方法，用于处理 `start` 相关逻辑。
+        """
         if len(self.browser) > 0:
             logging.log(ALERT, "Starting additional browser")
 
@@ -52,6 +68,8 @@ class Browser:
         """
         Start an isolated instance of Chrome that points to the currently
         running proxy.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         cmd = find_executable_cmd(
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -104,6 +122,8 @@ class Browser:
         """
         Start an isolated instance of Firefox that points to the currently
         running proxy.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         cmd = find_executable_cmd(
             "/Applications/Firefox.app/Contents/MacOS/firefox",
@@ -178,6 +198,9 @@ class Browser:
         )
 
     def done(self):
+        """
+        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        """
         for browser in self.browser:
             browser.kill()
         for tdir in self.tdir:

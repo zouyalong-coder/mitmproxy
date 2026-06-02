@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.update_alt_svc` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import re
 
 from mitmproxy import ctx
@@ -9,11 +13,20 @@ HOST_PATTERN = r"([a-zA-Z0-9.-]*:\d{1,5})"
 
 
 def update_alt_svc_header(header: str, port: int) -> str:
+    """
+    改写 Alt-Svc 头，避免客户端绕过 mitmproxy 直接使用 HTTP/3 等替代服务。
+    """
     return re.sub(HOST_PATTERN, f":{port}", header)
 
 
 class UpdateAltSvc:
+    """
+    `update_alt_svc` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "keep_alt_svc_header",
             bool,
@@ -22,6 +35,9 @@ class UpdateAltSvc:
         )
 
     def responseheaders(self, flow: HTTPFlow):
+        """
+        处理 HTTP 响应头事件，适合在 body 读取前决定流式处理或改写头部。
+        """
         assert flow.response
         if (
             not ctx.options.keep_alt_svc_header

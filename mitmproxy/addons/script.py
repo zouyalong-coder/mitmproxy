@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.script` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import asyncio
 import importlib.machinery
 import importlib.util
@@ -21,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 def load_script(path: str) -> types.ModuleType | None:
+    """
+    加载并执行用户脚本文件，返回脚本命名空间。
+    """
     fullname = "__mitmproxy_script__.{}".format(
         os.path.splitext(os.path.basename(path))[0]
     )
@@ -60,6 +67,8 @@ def load_script(path: str) -> types.ModuleType | None:
 def script_error_handler(path: str, exc: Exception) -> None:
     """
     Log errors during script loading.
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
     """
     tback = exc.__traceback__
     tback = addonmanager.cut_traceback(
@@ -77,9 +86,14 @@ ReloadInterval = 1
 class Script:
     """
     An addon that manages a single script.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     def __init__(self, path: str, reload: bool) -> None:
+        """
+        初始化对象状态。
+        """
         self.name = "scriptmanager:" + path
         self.path = path
         self.fullpath = os.path.expanduser(path.strip("'\" "))
@@ -100,17 +114,29 @@ class Script:
             self.loadscript()
 
     def running(self):
+        """
+        在 mitmproxy 完成启动后执行运行期初始化。
+        """
         self.is_running = True
 
     def done(self):
+        """
+        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        """
         if self.reloadtask:
             self.reloadtask.cancel()
 
     @property
     def addons(self):
+        """
+        `script` addon 中的方法，用于处理 `addons` 相关逻辑。
+        """
         return [self.ns] if self.ns else []
 
     def loadscript(self):
+        """
+        `script` addon 中的方法，用于处理 `loadscript` 相关逻辑。
+        """
         logger.info("Loading script %s" % self.path)
         if self.ns:
             ctx.master.addons.remove(self.ns)
@@ -133,6 +159,9 @@ class Script:
     async def watcher(self):
         # Script loading is terminally confused at the moment.
         # This here is a stopgap workaround to defer loading.
+        """
+        `script` addon 中的方法，用于处理 `watcher` 相关逻辑。
+        """
         await asyncio.sleep(0)
         last_mtime = 0.0
         while True:
@@ -153,16 +182,27 @@ class Script:
 class ScriptLoader:
     """
     An addon that manages loading scripts from options.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     def __init__(self):
+        """
+        初始化对象状态。
+        """
         self.is_running = False
         self.addons = []
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option("scripts", Sequence[str], [], "Execute a script.")
 
     def running(self):
+        """
+        在 mitmproxy 完成启动后执行运行期初始化。
+        """
         self.is_running = True
 
     @command.command("script.run")
@@ -171,6 +211,8 @@ class ScriptLoader:
         Run a script on the specified flows. The script is configured with
         the current options and all lifecycle events for each flow are
         simulated. Note that the load event is not invoked.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if not os.path.isfile(path):
             logger.error("No such script: %s" % path)
@@ -188,6 +230,9 @@ class ScriptLoader:
                         ctx.master.addons.invoke_addon_sync(mod, evt)
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "scripts" in updated:
             for s in ctx.options.scripts:
                 if ctx.options.scripts.count(s) > 1:

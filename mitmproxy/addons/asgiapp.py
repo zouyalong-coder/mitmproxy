@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.asgiapp` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import asyncio
 import logging
 import urllib.parse
@@ -18,17 +22,28 @@ class ASGIApp:
     Some important caveats:
         - This implementation will block and wait until the entire HTTP response is completed before sending out data.
         - It currently only implements the HTTP protocol (Lifespan and WebSocket are unimplemented).
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     def __init__(self, asgi_app, host: str, port: int | None):
+        """
+        初始化对象状态。
+        """
         asgi_app = asgiref.compatibility.guarantee_single_callable(asgi_app)
         self.asgi_app, self.host, self.port = asgi_app, host, port
 
     @property
     def name(self) -> str:
+        """
+        `asgiapp` addon 中的方法，用于处理 `name` 相关逻辑。
+        """
         return f"asgiapp:{self.host}:{self.port}"
 
     def should_serve(self, flow: http.HTTPFlow) -> bool:
+        """
+        根据当前配置和 flow 状态判断是否应执行后续处理。
+        """
         return bool(
             flow.request.pretty_host == self.host
             and (self.port is None or flow.request.port == self.port)
@@ -38,12 +53,21 @@ class ASGIApp:
         )
 
     async def request(self, flow: http.HTTPFlow) -> None:
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if self.should_serve(flow):
             await serve(self.asgi_app, flow)
 
 
 class WSGIApp(ASGIApp):
+    """
+    `asgiapp` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def __init__(self, wsgi_app, host: str, port: int | None):
+        """
+        初始化对象状态。
+        """
         asgi_app = asgiref.wsgi.WsgiToAsgi(wsgi_app)
         super().__init__(asgi_app, host, port)
 
@@ -57,6 +81,9 @@ HTTP_VERSION_MAP = {
 
 def make_scope(flow: http.HTTPFlow) -> dict:
     # %3F is a quoted question mark
+    """
+    把 mitmproxy 的 HTTPFlow 转换为 ASGI/WSGI 应用所需的 scope/environ 元数据。
+    """
     quoted_path = urllib.parse.quote_from_bytes(flow.request.data.path).split(
         "%3F", maxsplit=1
     )
@@ -97,6 +124,8 @@ def make_scope(flow: http.HTTPFlow) -> dict:
 async def serve(app, flow: http.HTTPFlow):
     """
     Serves app on flow.
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
     """
 
     scope = make_scope(flow)
@@ -105,6 +134,9 @@ async def serve(app, flow: http.HTTPFlow):
     sent_response = False
 
     async def receive():
+        """
+        `asgiapp` addon 中的函数，用于处理 `receive` 相关逻辑。
+        """
         nonlocal received_body
         if not received_body:
             received_body = True
@@ -119,6 +151,9 @@ async def serve(app, flow: http.HTTPFlow):
             return {"type": "http.disconnect"}
 
     async def send(event):
+        """
+        `asgiapp` addon 中的函数，用于处理 `send` 相关逻辑。
+        """
         if event["type"] == "http.response.start":
             flow.response = http.Response.make(
                 event["status"], b"", event.get("headers", [])

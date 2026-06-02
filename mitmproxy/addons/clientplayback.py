@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.clientplayback` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -37,15 +41,23 @@ class MockServer(layers.http.HttpConnection):
     """
     A mock HTTP "server" that just pretends it received a full HTTP request,
     which is then processed by the proxy core.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     flow: http.HTTPFlow
 
     def __init__(self, flow: http.HTTPFlow, context: Context):
+        """
+        初始化对象状态。
+        """
         super().__init__(context, context.client)
         self.flow = flow
 
     def _handle_event(self, event: events.Event) -> CommandGenerator[None]:
+        """
+        `clientplayback` addon 的内部辅助方法。
+        """
         if isinstance(event, events.Start):
             content = self.flow.request.raw_content
             self.flow.request.timestamp_start = self.flow.request.timestamp_end = (
@@ -83,9 +95,15 @@ class MockServer(layers.http.HttpConnection):
 
 
 class ReplayHandler(server.ConnectionHandler):
+    """
+    用于执行客户端重放请求的连接处理器。
+    """
     layer: layers.HttpLayer
 
     def __init__(self, flow: http.HTTPFlow, options: Options) -> None:
+        """
+        初始化对象状态。
+        """
         client = flow.client_conn.copy()
         client.state = ConnectionState.OPEN
 
@@ -110,6 +128,9 @@ class ReplayHandler(server.ConnectionHandler):
         self.done = asyncio.Event()
 
     async def replay(self) -> None:
+        """
+        `clientplayback` addon 中的方法，用于处理 `replay` 相关逻辑。
+        """
         await self.server_event(events.Start())
         await self.done.wait()
 
@@ -121,10 +142,16 @@ class ReplayHandler(server.ConnectionHandler):
         | tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
         | None = None,
     ) -> None:
+        """
+        `clientplayback` addon 中的方法，用于处理 `log` 相关逻辑。
+        """
         assert isinstance(level, int)
         logger.log(level=level, msg=f"[replay] {message}")
 
     async def handle_hook(self, hook: commands.StartHook) -> None:
+        """
+        `clientplayback` addon 中的方法，用于处理 `handle hook` 相关逻辑。
+        """
         (data,) = hook.args()
         await ctx.master.addons.handle_lifecycle(hook)
         if isinstance(data, flow.Flow):
@@ -143,6 +170,9 @@ class ReplayHandler(server.ConnectionHandler):
 
 
 class ClientPlayback:
+    """
+    实现 `clientplayback` addon 的回放控制逻辑。
+    """
     playback_task: asyncio.Task | None = None
     inflight: http.HTTPFlow | None
     queue: asyncio.Queue
@@ -150,12 +180,18 @@ class ClientPlayback:
     replay_tasks: set[asyncio.Task]
 
     def __init__(self):
+        """
+        初始化对象状态。
+        """
         self.queue = asyncio.Queue()
         self.inflight = None
         self.task = None
         self.replay_tasks = set()
 
     def running(self):
+        """
+        在 mitmproxy 完成启动后执行运行期初始化。
+        """
         self.options = ctx.options
         self.playback_task = asyncio_utils.create_task(
             self.playback(),
@@ -164,6 +200,9 @@ class ClientPlayback:
         )
 
     async def done(self):
+        """
+        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        """
         if self.playback_task:
             self.playback_task.cancel()
             try:
@@ -172,6 +211,9 @@ class ClientPlayback:
                 pass
 
     async def playback(self):
+        """
+        `clientplayback` addon 中的方法，用于处理 `playback` 相关逻辑。
+        """
         while True:
             self.inflight = await self.queue.get()
             try:
@@ -194,6 +236,9 @@ class ClientPlayback:
             self.inflight = None
 
     def check(self, f: flow.Flow) -> str | None:
+        """
+        根据过滤器或当前配置判断 flow 是否匹配。
+        """
         if f.live or f == self.inflight:
             return "Can't replay live flow."
         if f.intercepted:
@@ -210,6 +255,9 @@ class ClientPlayback:
         return None
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "client_replay",
             Sequence[str],
@@ -224,6 +272,9 @@ class ClientPlayback:
         )
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "client_replay" in updated and ctx.options.client_replay:
             try:
                 flows = io.read_flows_from_paths(ctx.options.client_replay)
@@ -241,6 +292,8 @@ class ClientPlayback:
     def count(self) -> int:
         """
         Approximate number of flows queued for replay.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return self.queue.qsize() + int(bool(self.inflight))
 
@@ -248,6 +301,8 @@ class ClientPlayback:
     def stop_replay(self) -> None:
         """
         Clear the replay queue.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         while True:
@@ -267,6 +322,8 @@ class ClientPlayback:
     def start_replay(self, flows: Sequence[flow.Flow]) -> None:
         """
         Add flows to the replay queue, skipping flows that can't be replayed.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated: list[http.HTTPFlow] = []
         for f in flows:
@@ -290,6 +347,8 @@ class ClientPlayback:
     def load_file(self, path: mitmproxy.types.Path) -> None:
         """
         Load flows from file, and add them to the replay queue.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             flows = io.read_flows_from_paths([path])

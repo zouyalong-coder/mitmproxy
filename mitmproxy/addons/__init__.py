@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.addons` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 from mitmproxy.addons import anticache
 from mitmproxy.addons import anticomp
 from mitmproxy.addons import block
@@ -32,6 +36,9 @@ from mitmproxy.addons import upstream_auth
 
 
 def default_addons():
+    """
+    返回 mitmproxy 默认加载的 addon 实例列表，决定核心功能的启动顺序。
+    """
     return [
         core.Core(),
         browser.Browser(),

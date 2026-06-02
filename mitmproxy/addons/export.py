@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.export` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import logging
 import shlex
 from collections.abc import Callable
@@ -16,6 +20,9 @@ from mitmproxy.utils import strutils
 
 
 def cleanup_request(f: flow.Flow) -> http.Request:
+    """
+    导出前清理请求对象，去掉或调整不适合重放的字段。
+    """
     if not getattr(f, "request", None):
         raise exceptions.CommandError("Can't export flow with no request.")
     assert isinstance(f, http.HTTPFlow)
@@ -25,7 +32,11 @@ def cleanup_request(f: flow.Flow) -> http.Request:
 
 
 def pop_headers(request: http.Request) -> None:
-    """Remove some headers that are redundant for curl/httpie export."""
+    """
+    Remove some headers that are redundant for curl/httpie export.
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    """
     request.headers.pop("content-length", None)
 
     if request.headers.get("host", "") == request.host:
@@ -35,6 +46,9 @@ def pop_headers(request: http.Request) -> None:
 
 
 def cleanup_response(f: flow.Flow) -> http.Response:
+    """
+    导出前清理响应对象，去掉或调整不适合重放的字段。
+    """
     if not getattr(f, "response", None):
         raise exceptions.CommandError("Can't export flow with no response.")
     assert isinstance(f, http.HTTPFlow)
@@ -44,6 +58,9 @@ def cleanup_response(f: flow.Flow) -> http.Response:
 
 
 def request_content_for_console(request: http.Request) -> str:
+    """
+    `export` addon 中的函数，用于处理 `request content for console` 相关逻辑。
+    """
     try:
         text = request.get_text(strict=True)
         assert text
@@ -61,6 +78,9 @@ def request_content_for_console(request: http.Request) -> str:
 
 
 def curl_command(f: flow.Flow) -> str:
+    """
+    把 HTTPFlow 转换为等价的 curl 命令。
+    """
     request = cleanup_request(f)
     pop_headers(request)
 
@@ -101,6 +121,9 @@ def curl_command(f: flow.Flow) -> str:
 
 
 def httpie_command(f: flow.Flow) -> str:
+    """
+    把 HTTPFlow 转换为等价的 HTTPie 命令。
+    """
     request = cleanup_request(f)
     pop_headers(request)
 
@@ -119,6 +142,9 @@ def httpie_command(f: flow.Flow) -> str:
 
 
 def raw_request(f: flow.Flow) -> bytes:
+    """
+    把 HTTP 请求序列化为原始 HTTP/1 字节。
+    """
     request = cleanup_request(f)
     if request.raw_content is None:
         raise exceptions.CommandError("Request content missing.")
@@ -126,6 +152,9 @@ def raw_request(f: flow.Flow) -> bytes:
 
 
 def raw_response(f: flow.Flow) -> bytes:
+    """
+    把 HTTP 响应序列化为原始 HTTP/1 字节。
+    """
     response = cleanup_response(f)
     if response.raw_content is None:
         raise exceptions.CommandError("Response content missing.")
@@ -133,7 +162,11 @@ def raw_response(f: flow.Flow) -> bytes:
 
 
 def raw(f: flow.Flow, separator=b"\r\n\r\n") -> bytes:
-    """Return either the request or response if only one exists, otherwise return both"""
+    """
+    Return either the request or response if only one exists, otherwise return both
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    """
     request_present = (
         isinstance(f, http.HTTPFlow) and f.request and f.request.raw_content is not None
     )
@@ -166,7 +199,13 @@ formats: dict[str, Callable[[flow.Flow], str | bytes]] = dict(
 
 
 class Export:
+    """
+    `export` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "export_preserve_original_ip",
             bool,
@@ -184,6 +223,8 @@ class Export:
     def formats(self) -> Sequence[str]:
         """
         Return a list of the supported export formats.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return list(sorted(formats.keys()))
 
@@ -191,6 +232,8 @@ class Export:
     def file(self, format: str, flow: flow.Flow, path: mitmproxy.types.Path) -> None:
         """
         Export a flow to path.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if format not in formats:
             raise exceptions.CommandError("No such export format: %s" % format)
@@ -208,6 +251,8 @@ class Export:
     def clip(self, format: str, f: flow.Flow) -> None:
         """
         Export a flow to the system clipboard.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         content = self.export_str(format, f)
         try:
@@ -219,6 +264,8 @@ class Export:
     def export_str(self, format: str, f: flow.Flow) -> str:
         """
         Export a flow and return the result.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if format not in formats:
             raise exceptions.CommandError("No such export format: %s" % format)

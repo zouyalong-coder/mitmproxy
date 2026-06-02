@@ -755,6 +755,13 @@ class HttpStream(layer.Layer):
         yield DropStream(self.stream_id)
 
     def make_server_connection(self) -> layer.CommandGenerator[bool]:
+        """
+        为当前 HTTP 请求获取或建立上游服务器连接。
+
+        普通 HTTP 请求会在这里根据 request 的 host、port 和 scheme 选择
+        直连或经 upstream proxy 建连。CONNECT 请求本身不通过这个函数转发；
+        CONNECT 是给代理的建隧道指令，由 `handle_connect()` 单独处理。
+        """
         connection, err = yield GetHttpConnection(
             (self.flow.request.host, self.flow.request.port),
             self.flow.request.scheme == "https",
@@ -771,6 +778,14 @@ class HttpStream(layer.Layer):
             return True
 
     def handle_connect(self) -> layer.CommandGenerator[None]:
+        """
+        处理客户端发来的 HTTP CONNECT 指令。
+
+        手机访问 HTTPS 站点时，系统 HTTP 代理会先发 CONNECT。mitmproxy 在
+        这里把 CONNECT 的 host/port 记录为目标服务器地址，触发
+        `HttpConnectHook` 允许 addon 干预，然后根据当前 HTTP mode 选择直接
+        建隧道或通过 upstream proxy 建隧道。
+        """
         self.client_state = self.state_done
         yield HttpConnectHook(self.flow)
         if (yield from self.check_killed(False)):
@@ -784,6 +799,14 @@ class HttpStream(layer.Layer):
             yield from self.handle_connect_upstream()
 
     def handle_connect_regular(self):
+        """
+        在 regular 模式下完成 CONNECT 的服务器侧准备。
+
+        如果配置为 eager 连接策略，会先尝试连接目标服务器，以便早发现错误。
+        随后创建 `NextLayer` 作为隧道内协议解析入口：手机收到 200 后通常会
+        在同一连接里继续发送 TLS ClientHello，后续由 `NextLayer` 识别为
+        TLS layer。
+        """
         if (
             not self.flow.response
             and self.context.options.connection_strategy == "eager"
@@ -800,13 +823,26 @@ class HttpStream(layer.Layer):
         yield from self.handle_connect_finish()
 
     def handle_connect_upstream(self):
+        """
+        在 upstream 模式下通过上游 HTTP(S) 代理建立 CONNECT 隧道。
+        """
         self.child_layer = _upstream_proxy.HttpUpstreamProxy.make(self.context, True)[0]
         yield from self.handle_connect_finish()
 
     def handle_connect_finish(self):
+        """
+        完成 CONNECT 响应并切换到隧道透传状态。
+
+        如果没有 addon 提前设置响应，则生成 `200 Connection established`。
+        2xx 响应表示隧道成立，当前 HTTP stream 后续进入 `passthrough`，
+        客户端后续字节交给 child layer 继续解析；非 2xx 响应则认为
+        CONNECT 失败，不进入隧道。
+        """
         if not self.flow.response:
             # Do not send any response headers as it breaks proxying non-80 ports on
             # Android emulators using the -http-proxy option.
+            # 不发送额外响应头是为了兼容 Android 模拟器的 -http-proxy 选项；
+            # 某些非 80 端口代理场景会因为额外头字段而失败。
             self.flow.response = http.Response(
                 self.flow.request.data.http_version,
                 200,

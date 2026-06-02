@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.modifybody` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import logging
 import re
 from collections.abc import Sequence
@@ -12,10 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 class ModifyBody:
+    """
+    `modifybody` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def __init__(self) -> None:
+        """
+        初始化对象状态。
+        """
         self.replacements: list[ModifySpec] = []
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "modify_body",
             Sequence[str],
@@ -28,6 +41,9 @@ class ModifyBody:
         )
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "modify_body" in updated:
             self.replacements = []
             for option in ctx.options.modify_body:
@@ -53,16 +69,25 @@ class ModifyBody:
             )
 
     def request(self, flow):
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if flow.response or flow.error or not flow.live:
             return
         self.run(flow)
 
     def response(self, flow):
+        """
+        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        """
         if flow.error or not flow.live:
             return
         self.run(flow)
 
     def run(self, flow):
+        """
+        `modifybody` addon 中的方法，用于处理 `run` 相关逻辑。
+        """
         for spec in self.replacements:
             if spec.matches(flow):
                 try:

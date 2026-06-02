@@ -7,6 +7,8 @@ The View:
 - Tracks focus within the view
 - Exposes a settings store for flows that automatically expires if the flow is
   removed from the store.
+
+中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
 """
 
 import collections
@@ -48,13 +50,25 @@ from mitmproxy.utils import signals
 
 
 class _OrderKey:
+    """
+    View 排序键的基类。
+    """
     def __init__(self, view):
+        """
+        初始化对象状态。
+        """
         self.view = view
 
     def generate(self, f: mitmproxy.flow.Flow) -> Any:  # pragma: no cover
+        """
+        `view` addon 中的方法，用于处理 `generate` 相关逻辑。
+        """
         pass
 
     def refresh(self, f):
+        """
+        `view` addon 中的方法，用于处理 `refresh` 相关逻辑。
+        """
         k = self._key()
         old = self.view.settings[f][k]
         new = self.generate(f)
@@ -65,9 +79,15 @@ class _OrderKey:
             self.view.sig_view_refresh.send()
 
     def _key(self):
+        """
+        `view` addon 的内部辅助方法。
+        """
         return "_order_%s" % id(self)
 
     def __call__(self, f):
+        """
+        让对象可以像函数一样被调用。
+        """
         if f.id in self.view._store:
             k = self._key()
             s = self.view.settings[f]
@@ -81,12 +101,24 @@ class _OrderKey:
 
 
 class OrderRequestStart(_OrderKey):
+    """
+    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def generate(self, f: mitmproxy.flow.Flow) -> float:
+        """
+        `view` addon 中的方法，用于处理 `generate` 相关逻辑。
+        """
         return f.timestamp_created
 
 
 class OrderRequestMethod(_OrderKey):
+    """
+    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def generate(self, f: mitmproxy.flow.Flow) -> str:
+        """
+        `view` addon 中的方法，用于处理 `generate` 相关逻辑。
+        """
         if isinstance(f, http.HTTPFlow):
             return f.request.method
         elif isinstance(f, (tcp.TCPFlow, udp.UDPFlow)):
@@ -98,7 +130,13 @@ class OrderRequestMethod(_OrderKey):
 
 
 class OrderRequestURL(_OrderKey):
+    """
+    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def generate(self, f: mitmproxy.flow.Flow) -> str:
+        """
+        `view` addon 中的方法，用于处理 `generate` 相关逻辑。
+        """
         if isinstance(f, http.HTTPFlow):
             return f.request.url
         elif isinstance(f, (tcp.TCPFlow, udp.UDPFlow)):
@@ -110,7 +148,13 @@ class OrderRequestURL(_OrderKey):
 
 
 class OrderKeySize(_OrderKey):
+    """
+    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def generate(self, f: mitmproxy.flow.Flow) -> int:
+        """
+        `view` addon 中的方法，用于处理 `generate` 相关逻辑。
+        """
         if isinstance(f, http.HTTPFlow):
             size = 0
             if f.request.raw_content:
@@ -136,15 +180,22 @@ orders = [
     ("z", "size"),
 ]
 
-
+# view 信号回调签名：通知监听者某个 flow 已经变化。
 def _signal_with_flow(flow: mitmproxy.flow.Flow) -> None: ...
 
 
+# view 删除信号回调签名：通知监听者被删除的 flow 及其原索引。
 def _sig_view_remove(flow: mitmproxy.flow.Flow, index: int) -> None: ...
 
 
 class View(collections.abc.Sequence):
+    """
+    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def __init__(self) -> None:
+        """
+        初始化对象状态。
+        """
         super().__init__()
         self._store: collections.OrderedDict[str, mitmproxy.flow.Flow] = (
             collections.OrderedDict()
@@ -187,6 +238,9 @@ class View(collections.abc.Sequence):
         self.settings = Settings(self)
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "view_filter", Optional[str], None, "Limit the view to matching flows."
         )
@@ -205,11 +259,16 @@ class View(collections.abc.Sequence):
         )
 
     def store_count(self):
+        """
+        `view` addon 中的方法，用于处理 `store count` 相关逻辑。
+        """
         return len(self._store)
 
     def _rev(self, idx: int) -> int:
         """
         Reverses an index, if needed
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if self.order_reversed:
             if idx < 0:
@@ -221,33 +280,57 @@ class View(collections.abc.Sequence):
         return idx
 
     def __len__(self):
+        """
+        返回当前集合或视图中的元素数量。
+        """
         return len(self._view)
 
     def __getitem__(self, offset) -> Any:
+        """
+        按索引或键读取当前集合中的元素。
+        """
         return self._view[self._rev(offset)]
 
     # Reflect some methods to the efficient underlying implementation
 
     def _bisect(self, f: mitmproxy.flow.Flow) -> int:
+        """
+        `view` addon 的内部辅助方法。
+        """
         v = self._view.bisect_right(f)
         return self._rev(v - 1) + 1
 
     def index(
         self, f: mitmproxy.flow.Flow, start: int = 0, stop: int | None = None
     ) -> int:
+        """
+        `view` addon 中的方法，用于处理 `index` 相关逻辑。
+        """
         return self._rev(self._view.index(f, start, stop))
 
     def __contains__(self, f: Any) -> bool:
+        """
+        判断指定对象是否存在于当前集合中。
+        """
         return self._view.__contains__(f)
 
     def _order_key_name(self):
+        """
+        `view` addon 的内部辅助方法。
+        """
         return "_order_%s" % id(self.order_key)
 
     def _base_add(self, f):
+        """
+        `view` addon 的内部辅助方法。
+        """
         self.settings[f][self._order_key_name()] = self.order_key(f)
         self._view.add(f)
 
     def _refilter(self):
+        """
+        `view` addon 的内部辅助方法。
+        """
         self._view.clear()
         for i in self._store.values():
             if self.show_marked and not i.marked:
@@ -265,6 +348,8 @@ class View(collections.abc.Sequence):
         Go to a specified offset. Positive offests are from the beginning of
         the view, negative from the end of the view, so that 0 is the first
         flow, -1 is the last flow.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if len(self) == 0:
             return
@@ -280,6 +365,8 @@ class View(collections.abc.Sequence):
     def focus_next(self) -> None:
         """
         Set focus to the next flow.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if self.focus.index is not None:
             idx = self.focus.index + 1
@@ -292,6 +379,8 @@ class View(collections.abc.Sequence):
     def focus_prev(self) -> None:
         """
         Set focus to the previous flow.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if self.focus.index is not None:
             idx = self.focus.index - 1
@@ -305,11 +394,16 @@ class View(collections.abc.Sequence):
     def order_options(self) -> Sequence[str]:
         """
         Choices supported by the view_order option.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return list(sorted(self.orders.keys()))
 
     @command.command("view.order.reverse")
     def set_reversed(self, boolean: bool) -> None:
+        """
+        更新当前 addon 状态中的指定数据。
+        """
         self.order_reversed = boolean
         self.sig_view_refresh.send()
 
@@ -317,6 +411,8 @@ class View(collections.abc.Sequence):
     def set_order(self, order_key: str) -> None:
         """
         Sets the current view order.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if order_key not in self.orders:
             raise exceptions.CommandError("Unknown flow order: %s" % order_key)
@@ -330,6 +426,8 @@ class View(collections.abc.Sequence):
     def get_order(self) -> str:
         """
         Returns the current view order.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         order = ""
         for k in self.orders.keys():
@@ -342,6 +440,8 @@ class View(collections.abc.Sequence):
     def set_filter_cmd(self, filter_expr: str) -> None:
         """
         Sets the current view filter.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         filt = None
         if filter_expr:
@@ -352,6 +452,9 @@ class View(collections.abc.Sequence):
         self.set_filter(filt)
 
     def set_filter(self, flt: flowfilter.TFilter | None):
+        """
+        更新当前 addon 状态中的指定数据。
+        """
         self.filter = flt or flowfilter.match_all
         self._refilter()
 
@@ -360,6 +463,8 @@ class View(collections.abc.Sequence):
     def clear(self) -> None:
         """
         Clears both the store and view.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         self._store.clear()
         self._view.clear()
@@ -370,6 +475,8 @@ class View(collections.abc.Sequence):
     def clear_not_marked(self) -> None:
         """
         Clears only the unmarked flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for flow in self._store.copy().values():
             if not flow.marked:
@@ -383,6 +490,8 @@ class View(collections.abc.Sequence):
     def getvalue(self, flow: mitmproxy.flow.Flow, key: str, default: str) -> str:
         """
         Get a value from the settings store for the specified flow.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return self.settings[flow].get(key, default)
 
@@ -391,6 +500,8 @@ class View(collections.abc.Sequence):
         """
         Toggle a boolean value in the settings store, setting the value to
         the string "true" or "false".
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -405,6 +516,8 @@ class View(collections.abc.Sequence):
     ) -> None:
         """
         Set a value in the settings store for the specified flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -418,6 +531,8 @@ class View(collections.abc.Sequence):
         """
         Duplicates the specified flows, and sets the focus to the first
         duplicate.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         dups = [f.copy() for f in flows]
         if dups:
@@ -429,6 +544,8 @@ class View(collections.abc.Sequence):
     def remove(self, flows: Sequence[mitmproxy.flow.Flow]) -> None:
         """
         Removes the flow from the underlying store and the view.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for f in flows:
             if f.id in self._store:
@@ -449,6 +566,8 @@ class View(collections.abc.Sequence):
     def resolve(self, flow_spec: str) -> Sequence[mitmproxy.flow.Flow]:
         """
         Resolve a flow list specification to an actual list of flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if flow_spec == "@all":
             return [i for i in self._store.values()]
@@ -474,6 +593,9 @@ class View(collections.abc.Sequence):
 
     @command.command("view.flows.create")
     def create(self, method: str, url: str) -> None:
+        """
+        `view` addon 中的方法，用于处理 `create` 相关逻辑。
+        """
         try:
             req = http.Request.make(method.upper(), url)
         except ValueError as e:
@@ -495,6 +617,8 @@ class View(collections.abc.Sequence):
     def load_file(self, path: mitmproxy.types.Path) -> None:
         """
         Load flows into the view, without processing them with addons.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             with open(path, "rb") as f:
@@ -512,6 +636,8 @@ class View(collections.abc.Sequence):
         """
         Adds a flow to the state. If the flow already exists, it is
         ignored.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for f in flows:
             if f.id not in self._store:
@@ -526,6 +652,8 @@ class View(collections.abc.Sequence):
         """
         Get flow with the given id from the store.
         Returns None if the flow is not found.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return self._store.get(flow_id)
 
@@ -534,6 +662,8 @@ class View(collections.abc.Sequence):
     def get_length(self) -> int:
         """
         Returns view length.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return len(self)
 
@@ -541,6 +671,8 @@ class View(collections.abc.Sequence):
     def get_marked(self) -> bool:
         """
         Returns true if view is in marked mode.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return self.show_marked
 
@@ -548,6 +680,8 @@ class View(collections.abc.Sequence):
     def toggle_marked(self) -> None:
         """
         Toggle whether to show marked views only.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         self.show_marked = not self.show_marked
         self._refilter()
@@ -556,11 +690,16 @@ class View(collections.abc.Sequence):
     def inbounds(self, index: int) -> bool:
         """
         Is this 0 <= index < len(self)?
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return 0 <= index < len(self)
 
     # Event handlers
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "view_filter" in updated:
             filt = None
             if ctx.options.view_filter:
@@ -581,59 +720,112 @@ class View(collections.abc.Sequence):
             self.focus_follow = ctx.options.console_focus_follow
 
     def requestheaders(self, f):
+        """
+        处理 HTTP 请求头事件，适合在 body 读取前决定流式处理或改写头部。
+        """
         self.add([f])
 
     def error(self, f):
+        """
+        处理 HTTP flow 的协议或连接错误事件。
+        """
         self.update([f])
 
     def response(self, f):
+        """
+        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        """
         self.update([f])
 
     def intercept(self, f):
+        """
+        处理 flow 被拦截的事件。
+        """
         self.update([f])
 
     def resume(self, f):
+        """
+        处理 flow 从拦截状态恢复的事件。
+        """
         self.update([f])
 
     def kill(self, f):
+        """
+        处理 flow 被终止的事件。
+        """
         self.update([f])
 
     def tcp_start(self, f):
+        """
+        处理 TCP flow 开始事件。
+        """
         self.add([f])
 
     def tcp_message(self, f):
+        """
+        处理 TCP 消息事件。
+        """
         self.update([f])
 
     def tcp_error(self, f):
+        """
+        处理 TCP flow 错误事件。
+        """
         self.update([f])
 
     def tcp_end(self, f):
+        """
+        处理 TCP flow 正常结束事件。
+        """
         self.update([f])
 
     def udp_start(self, f):
+        """
+        处理 UDP flow 开始事件。
+        """
         self.add([f])
 
     def udp_message(self, f):
+        """
+        处理 UDP 消息事件。
+        """
         self.update([f])
 
     def udp_error(self, f):
+        """
+        处理 UDP flow 错误事件。
+        """
         self.update([f])
 
     def udp_end(self, f):
+        """
+        处理 UDP flow 正常结束事件。
+        """
         self.update([f])
 
     def dns_request(self, f):
+        """
+        处理 DNS 请求事件。
+        """
         self.add([f])
 
     def dns_response(self, f):
+        """
+        处理 DNS 响应事件。
+        """
         self.update([f])
 
     def dns_error(self, f):
+        """
+        处理 DNS flow 错误事件。
+        """
         self.update([f])
 
     def update(self, flows: Sequence[mitmproxy.flow.Flow]) -> None:
         """
         Updates a list of flows. If flow is not in the state, it's ignored.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for f in flows:
             if f.id in self._store:
@@ -663,9 +855,14 @@ class View(collections.abc.Sequence):
 class Focus:
     """
     Tracks a focus element within a View.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     def __init__(self, v: View) -> None:
+        """
+        初始化对象状态。
+        """
         self.view = v
         self._flow: mitmproxy.flow.Flow | None = None
         self.sig_change = signals.SyncSignal(lambda: None)
@@ -677,10 +874,16 @@ class Focus:
 
     @property
     def flow(self) -> mitmproxy.flow.Flow | None:
+        """
+        `view` addon 中的方法，用于处理 `flow` 相关逻辑。
+        """
         return self._flow
 
     @flow.setter
     def flow(self, f: mitmproxy.flow.Flow | None):
+        """
+        `view` addon 中的方法，用于处理 `flow` 相关逻辑。
+        """
         if f is not None and f not in self.view:
             raise ValueError("Attempt to set focus to flow not in view")
         self._flow = f
@@ -688,26 +891,41 @@ class Focus:
 
     @property
     def index(self) -> int | None:
+        """
+        `view` addon 中的方法，用于处理 `index` 相关逻辑。
+        """
         if self.flow:
             return self.view.index(self.flow)
         return None
 
     @index.setter
     def index(self, idx):
+        """
+        `view` addon 中的方法，用于处理 `index` 相关逻辑。
+        """
         if idx < 0 or idx > len(self.view) - 1:
             raise ValueError("Index out of view bounds")
         self.flow = self.view[idx]
 
     def _nearest(self, f, v):
+        """
+        `view` addon 的内部辅助方法。
+        """
         return min(v._bisect(f), len(v) - 1)
 
     def _sig_view_remove(self, flow, index):
+        """
+        `view` addon 的内部辅助方法。
+        """
         if len(self.view) == 0:
             self.flow = None
         elif flow is self.flow:
             self.index = min(index, len(self.view) - 1)
 
     def _sig_view_refresh(self):
+        """
+        `view` addon 的内部辅助方法。
+        """
         if len(self.view) == 0:
             self.flow = None
         elif self.flow is None:
@@ -717,33 +935,57 @@ class Focus:
 
     def _sig_view_add(self, flow):
         # We only have to act if we don't have a focus element
+        """
+        `view` addon 的内部辅助方法。
+        """
         if not self.flow:
             self.flow = flow
 
 
 class Settings(collections.abc.Mapping):
+    """
+    保存 view addon 的过滤、排序和展示设置。
+    """
     def __init__(self, view: View) -> None:
+        """
+        初始化对象状态。
+        """
         self.view = view
         self._values: MutableMapping[str, dict] = {}
         view.sig_store_remove.connect(self._sig_store_remove)
         view.sig_store_refresh.connect(self._sig_store_refresh)
 
     def __iter__(self) -> Iterator:
+        """
+        迭代当前集合或视图中的元素。
+        """
         return iter(self._values)
 
     def __len__(self) -> int:
+        """
+        返回当前集合或视图中的元素数量。
+        """
         return len(self._values)
 
     def __getitem__(self, f: mitmproxy.flow.Flow) -> dict:
+        """
+        按索引或键读取当前集合中的元素。
+        """
         if f.id not in self.view._store:
             raise KeyError
         return self._values.setdefault(f.id, {})
 
     def _sig_store_remove(self, flow):
+        """
+        `view` addon 的内部辅助方法。
+        """
         if flow.id in self._values:
             del self._values[flow.id]
 
     def _sig_store_refresh(self):
+        """
+        `view` addon 的内部辅助方法。
+        """
         for fid in list(self._values.keys()):
             if fid not in self.view._store:
                 del self._values[fid]

@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.cut` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import csv
 import io
 import logging
@@ -19,12 +23,18 @@ logger = logging.getLogger(__name__)
 
 
 def headername(spec: str):
+    """
+    规范化用于 cut/export 的 HTTP 头字段名。
+    """
     if not (spec.startswith("header[") and spec.endswith("]")):
         raise exceptions.CommandError("Invalid header spec: %s" % spec)
     return spec[len("header[") : -1].strip()
 
 
 def is_addr(v):
+    """
+    判断字符串是否像连接地址字段。
+    """
     return isinstance(v, tuple) and len(v) > 1
 
 
@@ -32,6 +42,9 @@ def extract(cut: str, f: flow.Flow) -> str | bytes:
     # Hack for https://github.com/mitmproxy/mitmproxy/issues/6721:
     # Make "save body" keybind work for WebSocket flows.
     # Ideally the keybind would be smarter and this here can get removed.
+    """
+    从 flow 中按 cut 规范提取字段值。
+    """
     if (
         isinstance(f, http.HTTPFlow)
         and f.websocket
@@ -73,6 +86,9 @@ def extract(cut: str, f: flow.Flow) -> str | bytes:
 
 
 def extract_str(cut: str, f: flow.Flow) -> str:
+    """
+    从 flow 中提取字段值并转换为字符串。
+    """
     ret = extract(cut, f)
     if isinstance(ret, bytes):
         return repr(ret)
@@ -81,6 +97,10 @@ def extract_str(cut: str, f: flow.Flow) -> str:
 
 
 class Cut:
+    """
+    `cut` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
+
     @command.command("cut")
     def cut(
         self,
@@ -95,6 +115,8 @@ class Cut:
         bytes: SSL certificates are converted to PEM format, bools are "true"
         or "false", "bytes" are preserved, and all other values are
         converted to strings.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         ret: list[list[str | bytes]] = []
         for f in flows:
@@ -114,6 +136,8 @@ class Cut:
         the data is written to file as-is, with raw bytes preserved. If the
         path is prefixed with a "+", values are appended if there is an
         existing file.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         append = False
         if path.startswith("+"):
@@ -157,6 +181,8 @@ class Cut:
         Send cuts to the clipboard. If there are multiple flows or cuts, the
         format is UTF-8 encoded CSV. If there is exactly one row and one
         column, the data is written to file as-is, with raw bytes preserved.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         v: str | bytes
         fp = io.StringIO(newline="")

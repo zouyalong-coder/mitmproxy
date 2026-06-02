@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.dns_resolver` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 class DnsResolver:
+    """
+    `dns_resolver` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "dns_use_hosts_file",
             bool,
@@ -34,6 +44,9 @@ class DnsResolver:
         )
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "dns_use_hosts_file" in updated or "dns_name_servers" in updated:
             self.resolver.cache_clear()
             self.name_servers.cache_clear()
@@ -43,6 +56,8 @@ class DnsResolver:
         """
         Returns the operating system's name servers unless custom name servers are set.
         On error, an empty list is returned.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             return (
@@ -63,6 +78,8 @@ class DnsResolver:
             The DNS resolver to use.
         Raises:
             MissingNameServers, if name servers are unknown and `dns_use_hosts_file` is disabled.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if ns := self.name_servers():
             # We always want to use our own resolver if name server info is available.
@@ -78,6 +95,9 @@ class DnsResolver:
             raise MissingNameServers()
 
     async def dns_request(self, flow: dns.DNSFlow) -> None:
+        """
+        处理 DNS 请求事件。
+        """
         if self._should_resolve(flow):
             all_ip_lookups = (
                 flow.request.query
@@ -100,6 +120,9 @@ class DnsResolver:
 
     @staticmethod
     def _should_resolve(flow: dns.DNSFlow) -> bool:
+        """
+        根据当前配置和 flow 状态判断是否应执行后续处理。
+        """
         return (
             (
                 isinstance(flow.client_conn.proxy_mode, mode_specs.DnsMode)
@@ -117,6 +140,9 @@ class DnsResolver:
         self,
         message: dns.DNSMessage,
     ) -> dns.DNSMessage:
+        """
+        `dns_resolver` addon 中的方法，用于处理 `resolve` 相关逻辑。
+        """
         q = message.question
         assert q
         try:
@@ -148,27 +174,54 @@ class DnsResolver:
 
 
 class Resolver(Protocol):
+    """
+    DNS 解析器抽象基类。
+    """
     async def lookup_ip(self, domain: str) -> list[str]:  # pragma: no cover
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ip` 相关逻辑。
+        """
         ...
 
     async def lookup_ipv4(self, domain: str) -> list[str]:  # pragma: no cover
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ipv4` 相关逻辑。
+        """
         ...
 
     async def lookup_ipv6(self, domain: str) -> list[str]:  # pragma: no cover
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ipv6` 相关逻辑。
+        """
         ...
 
 
 class GetaddrinfoFallbackResolver(Resolver):
+    """
+    基于系统 getaddrinfo 的兜底 DNS 解析器。
+    """
     async def lookup_ip(self, domain: str) -> list[str]:
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ip` 相关逻辑。
+        """
         return await self._lookup(domain, socket.AF_UNSPEC)
 
     async def lookup_ipv4(self, domain: str) -> list[str]:
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ipv4` 相关逻辑。
+        """
         return await self._lookup(domain, socket.AF_INET)
 
     async def lookup_ipv6(self, domain: str) -> list[str]:
+        """
+        `dns_resolver` addon 中的方法，用于处理 `lookup ipv6` 相关逻辑。
+        """
         return await self._lookup(domain, socket.AF_INET6)
 
     async def _lookup(self, domain: str, family: socket.AddressFamily) -> list[str]:
+        """
+        `dns_resolver` addon 的内部辅助方法。
+        """
         addrinfos = await asyncio.get_running_loop().getaddrinfo(
             host=domain,
             port=None,
@@ -179,4 +232,7 @@ class GetaddrinfoFallbackResolver(Resolver):
 
 
 class MissingNameServers(RuntimeError):
+    """
+    表示无法找到可用 DNS nameserver 的异常。
+    """
     pass

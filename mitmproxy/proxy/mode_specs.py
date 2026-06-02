@@ -185,7 +185,15 @@ def _check_empty(data):
 
 
 class RegularMode(ProxyMode):
-    """A regular HTTP(S) proxy that is interfaced with `HTTP CONNECT` calls (or absolute-form HTTP requests)."""
+    """
+    A regular HTTP(S) proxy that is interfaced with `HTTP CONNECT` calls (or absolute-form HTTP requests).
+
+    常规 HTTP(S) 显式代理模式。
+
+    手机或浏览器在系统代理设置中填写 mitmproxy 地址时，通常使用的就是这个
+    模式：明文 HTTP 请求会以 absolute-form 发送给代理，HTTPS 请求会先发送
+    HTTP CONNECT，再在 CONNECT 隧道内进行 TLS 握手。
+    """
 
     description = "HTTP(S) proxy"
     transport_protocol = TCP

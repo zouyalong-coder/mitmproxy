@@ -1,10 +1,20 @@
+"""
+`mitmproxy.addons.strip_dns_https_records` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 from mitmproxy import ctx
 from mitmproxy import dns
 from mitmproxy.net.dns import types
 
 
 class StripDnsHttpsRecords:
+    """
+    `strip_dns_https_records` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "strip_ech",
             bool,
@@ -13,6 +23,9 @@ class StripDnsHttpsRecords:
         )
 
     def dns_response(self, flow: dns.DNSFlow):
+        """
+        处理 DNS 响应事件。
+        """
         assert flow.response
         if ctx.options.strip_ech:
             for answer in flow.response.answers:

@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.serverplayback` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import hashlib
 import logging
 import urllib
@@ -27,14 +31,23 @@ HASH_OPTIONS = [
 
 
 class ServerPlayback:
+    """
+    实现 `serverplayback` addon 的回放控制逻辑。
+    """
     flowmap: dict[Hashable, list[http.HTTPFlow]]
     configured: bool
 
     def __init__(self):
+        """
+        初始化对象状态。
+        """
         self.flowmap = {}
         self.configured = False
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "server_replay_kill_extra",
             bool,
@@ -139,6 +152,8 @@ class ServerPlayback:
     def load_flows(self, flows: Sequence[flow.Flow]) -> None:
         """
         Replay server responses from flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         self.flowmap = {}
         self.add_flows(flows)
@@ -147,6 +162,8 @@ class ServerPlayback:
     def add_flows(self, flows: Sequence[flow.Flow]) -> None:
         """
         Add responses from flows to server replay list.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for f in flows:
             if isinstance(f, http.HTTPFlow):
@@ -156,6 +173,9 @@ class ServerPlayback:
 
     @command.command("replay.server.file")
     def load_file(self, path: mitmproxy.types.Path) -> None:
+        """
+        加载外部文件或配置，并转换为 addon 可处理的数据。
+        """
         try:
             flows = io.read_flows_from_paths([path])
         except exceptions.FlowReadException as e:
@@ -166,17 +186,24 @@ class ServerPlayback:
     def clear(self) -> None:
         """
         Stop server replay.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         self.flowmap = {}
         ctx.master.addons.trigger(hooks.UpdateHook([]))
 
     @command.command("replay.server.count")
     def count(self) -> int:
+        """
+        `serverplayback` addon 中的方法，用于处理 `count` 相关逻辑。
+        """
         return sum(len(i) for i in self.flowmap.values())
 
     def _hash(self, flow: http.HTTPFlow) -> Hashable:
         """
         Calculates a loose hash of the flow request.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         r = flow.request
         _, _, path, _, query, _ = urllib.parse.urlparse(r.url)
@@ -226,6 +253,8 @@ class ServerPlayback:
         """
         Returns the next flow object, or None if no matching flow was
         found.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         hash = self._hash(flow)
         if hash in self.flowmap:
@@ -248,6 +277,9 @@ class ServerPlayback:
             return None
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if ctx.options.server_replay_kill_extra:
             logger.warning(
                 "server_replay_kill_extra has been deprecated, "
@@ -271,11 +303,16 @@ class ServerPlayback:
         """
         Rebuild flowmap if the hashing method has changed during execution,
         see https://github.com/mitmproxy/mitmproxy/issues/4506
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         flows = [flow for lst in self.flowmap.values() for flow in lst]
         self.load_flows(flows)
 
     def request(self, f: http.HTTPFlow) -> None:
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if self.flowmap:
             rflow = self.next_flow(f)
             if rflow:

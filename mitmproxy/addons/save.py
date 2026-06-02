@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.save` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import logging
 import os.path
 import sys
@@ -24,7 +28,11 @@ from mitmproxy.log import ALERT
 
 @lru_cache
 def _path(path: str) -> str:
-    """Extract the path from a path spec (which may have an extra "+" at the front)"""
+    """
+    Extract the path from a path spec (which may have an extra "+" at the front)
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    """
     if path.startswith("+"):
         path = path[1:]
     return os.path.expanduser(path)
@@ -32,7 +40,11 @@ def _path(path: str) -> str:
 
 @lru_cache
 def _mode(path: str) -> Literal["ab", "wb"]:
-    """Extract the writing mode (overwrite or append) from a path spec"""
+    """
+    Extract the writing mode (overwrite or append) from a path spec
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    """
     if path.startswith("+"):
         return "ab"
     else:
@@ -40,13 +52,22 @@ def _mode(path: str) -> Literal["ab", "wb"]:
 
 
 class Save:
+    """
+    `save` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def __init__(self) -> None:
+        """
+        初始化对象状态。
+        """
         self.stream: io.FilteredFlowWriter | None = None
         self.filt: flowfilter.TFilter | None = None
         self.active_flows: set[flow.Flow] = set()
         self.current_path: str | None = None
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "save_stream_file",
             Optional[str],
@@ -66,6 +87,9 @@ class Save:
         )
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "save_stream_filter" in updated:
             if ctx.options.save_stream_filter:
                 try:
@@ -86,6 +110,9 @@ class Save:
                 self.done()
 
     def maybe_rotate_to_new_file(self) -> None:
+        """
+        `save` addon 中的方法，用于处理 `maybe rotate to new file` 相关逻辑。
+        """
         path = datetime.today().strftime(_path(ctx.options.save_stream_file))
         if self.current_path == path:
             return
@@ -104,6 +131,8 @@ class Save:
     def save_flow(self, flow: flow.Flow) -> None:
         """
         Write the flow to the stream, but first check if we need to rotate to a new file.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if not self.stream:
             return
@@ -120,6 +149,9 @@ class Save:
             self.active_flows.discard(flow)
 
     def done(self) -> None:
+        """
+        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        """
         if self.stream:
             for f in self.active_flows:
                 self.stream.add(f)
@@ -134,6 +166,8 @@ class Save:
         """
         Save flows to a file. If the path starts with a +, flows are
         appended to the file, otherwise it is over-written.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             with open(_path(path), _mode(path)) as f:
@@ -151,47 +185,86 @@ class Save:
             logging.log(ALERT, f"Saved {len(flows)} flows.")
 
     def tcp_start(self, flow: tcp.TCPFlow):
+        """
+        处理 TCP flow 开始事件。
+        """
         if self.stream:
             self.active_flows.add(flow)
 
     def tcp_end(self, flow: tcp.TCPFlow):
+        """
+        处理 TCP flow 正常结束事件。
+        """
         self.save_flow(flow)
 
     def tcp_error(self, flow: tcp.TCPFlow):
+        """
+        处理 TCP flow 错误事件。
+        """
         self.tcp_end(flow)
 
     def udp_start(self, flow: udp.UDPFlow):
+        """
+        处理 UDP flow 开始事件。
+        """
         if self.stream:
             self.active_flows.add(flow)
 
     def udp_end(self, flow: udp.UDPFlow):
+        """
+        处理 UDP flow 正常结束事件。
+        """
         self.save_flow(flow)
 
     def udp_error(self, flow: udp.UDPFlow):
+        """
+        处理 UDP flow 错误事件。
+        """
         self.udp_end(flow)
 
     def websocket_end(self, flow: http.HTTPFlow):
+        """
+        处理 WebSocket 连接结束事件。
+        """
         self.save_flow(flow)
 
     def request(self, flow: http.HTTPFlow):
+        """
+        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        """
         if self.stream:
             self.active_flows.add(flow)
 
     def response(self, flow: http.HTTPFlow):
         # websocket flows will receive a websocket_end,
         # we don't want to persist them here already
+        """
+        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        """
         if flow.websocket is None:
             self.save_flow(flow)
 
     def error(self, flow: http.HTTPFlow):
+        """
+        处理 HTTP flow 的协议或连接错误事件。
+        """
         self.response(flow)
 
     def dns_request(self, flow: dns.DNSFlow):
+        """
+        处理 DNS 请求事件。
+        """
         if self.stream:
             self.active_flows.add(flow)
 
     def dns_response(self, flow: dns.DNSFlow):
+        """
+        处理 DNS 响应事件。
+        """
         self.save_flow(flow)
 
     def dns_error(self, flow: dns.DNSFlow):
+        """
+        处理 DNS flow 错误事件。
+        """
         self.save_flow(flow)

@@ -13,6 +13,8 @@ third time when we check if the protocol within that TLS stream is actually HTTP
 Sometimes it's useful to hardcode specific logic in next_layer when one wants to do fancy things.
 In that case it's not necessary to modify mitmproxy's source, adding a custom addon with a next_layer event hook
 that sets nextlayer.layer works just as well.
+
+中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
 """
 
 from __future__ import annotations
@@ -63,6 +65,9 @@ logger = logging.getLogger(__name__)
 def stack_match(
     context: Context, layers: Sequence[type[Layer] | tuple[type[Layer], ...]]
 ) -> bool:
+    """
+    检查当前协议 layer 栈是否与给定类型序列匹配。
+    """
     if len(context.layers) != len(layers):
         return False
     return all(
@@ -72,16 +77,26 @@ def stack_match(
 
 
 class NeedsMoreData(Exception):
-    """Signal that the decision on which layer to put next needs to be deferred within the NextLayer addon."""
+    """
+    Signal that the decision on which layer to put next needs to be deferred within the NextLayer addon.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    """
 
 
 class NextLayer:
+    """
+    `next_layer` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     ignore_hosts: Sequence[re.Pattern] = ()
     allow_hosts: Sequence[re.Pattern] = ()
     tcp_hosts: Sequence[re.Pattern] = ()
     udp_hosts: Sequence[re.Pattern] = ()
 
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "tcp_hosts" in updated:
             self.tcp_hosts = [
                 re.compile(x, re.IGNORECASE) for x in ctx.options.tcp_hosts
@@ -99,6 +114,9 @@ class NextLayer:
             ]
 
     def next_layer(self, nextlayer: layer.NextLayer):
+        """
+        `next_layer` addon 中的方法，用于处理 `next layer` 相关逻辑。
+        """
         if nextlayer.layer:
             return  # do not override something another addon has set.
         try:
@@ -115,9 +133,15 @@ class NextLayer:
     def _next_layer(
         self, context: Context, data_client: bytes, data_server: bytes
     ) -> Layer | None:
+        """
+        `next_layer` addon 的内部辅助方法。
+        """
         assert context.layers
 
         def s(*layers):
+            """
+            `next_layer` addon 中的函数，用于处理 `s` 相关逻辑。
+            """
             return stack_match(context, layers)
 
         tcp_based = context.client.transport_protocol == "tcp"
@@ -208,6 +232,8 @@ class NextLayer:
 
         Raises:
             NeedsMoreData, if we need to wait for more input data.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if not ctx.options.ignore_hosts and not ctx.options.allow_hosts:
             return False
@@ -276,6 +302,8 @@ class NextLayer:
 
         Raises:
             NeedsMoreData, if the HTTP request is incomplete.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if context.client.transport_protocol != "tcp" or data_server:
             return None
@@ -306,6 +334,8 @@ class NextLayer:
 
         Raises:
             NeedsMoreData, if the ClientHello is incomplete.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         match context.client.transport_protocol:
             case "tcp":
@@ -339,6 +369,9 @@ class NextLayer:
 
     @staticmethod
     def _setup_reverse_proxy(context: Context, data_client: bytes) -> Layer:
+        """
+        更新当前 addon 状态中的指定数据。
+        """
         spec = cast(mode_specs.ReverseMode, context.client.proxy_mode)
         stack = tunnel.LayerStack()
 
@@ -405,6 +438,15 @@ class NextLayer:
 
     @staticmethod
     def _setup_explicit_http_proxy(context: Context, data_client: bytes) -> Layer:
+        """
+        为显式 HTTP 代理连接构造后续协议 layer。
+
+        手机系统代理通常使用明文 HTTP proxy：HTTP 请求直接进入
+        `HttpLayer(regular)`，HTTPS 请求先由该 HTTP layer 解析 CONNECT。
+        如果首包本身就是 TLS，则表示客户端在和代理建立“安全 Web 代理”
+        连接，需要先放入 `ClientTLSLayer`，TLS 解开后再解析 HTTP proxy
+        协议。
+        """
         stack = tunnel.LayerStack()
 
         if context.client.transport_protocol == "udp":
@@ -421,6 +463,9 @@ class NextLayer:
 
     @staticmethod
     def _is_destination_in_hosts(context: Context, hosts: Iterable[re.Pattern]) -> bool:
+        """
+        `next_layer` addon 的内部辅助方法。
+        """
         return any(
             (context.server.address and rex.search(context.server.address[0]))
             or (context.client.sni and rex.search(context.client.sni))
@@ -449,6 +494,8 @@ def _starts_like_quic(data_client: bytes, server_address: Address | None) -> boo
     Returns:
         True, if the passed bytes could be the start of a QUIC packet.
         False, otherwise.
+    
+    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
     """
     # Minimum size: 1 flag byte + 1+ packet number bytes + 16+ bytes encrypted payload
     if len(data_client) < 18:

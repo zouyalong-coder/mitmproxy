@@ -1,3 +1,7 @@
+"""
+`mitmproxy.addons.core` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+"""
+
 import logging
 import os
 from collections.abc import Sequence
@@ -20,7 +24,13 @@ LISTEN_PORT = 8080
 
 
 class Core:
+    """
+    `core` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    """
     def configure(self, updated):
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         opts = ctx.options
         if opts.add_upstream_certs_to_client_chain and not opts.upstream_cert:
             raise exceptions.OptionsError(
@@ -41,6 +51,8 @@ class Core:
         strings and integers are set to None (if permitted), and sequences
         are emptied. Boolean values can be true, false or toggle.
         Multiple values are concatenated with a single space.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if value:
             specs = [f"{option}={v}" for v in value]
@@ -55,6 +67,8 @@ class Core:
     def resume(self, flows: Sequence[flow.Flow]) -> None:
         """
         Resume flows if they are intercepted.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         intercepted = [i for i in flows if i.intercepted]
         for f in intercepted:
@@ -66,6 +80,8 @@ class Core:
     def mark(self, flows: Sequence[flow.Flow], marker: mitmproxy.types.Marker) -> None:
         """
         Mark flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         if not (marker == "" or marker in emoji.emoji):
@@ -81,6 +97,8 @@ class Core:
     def mark_toggle(self, flows: Sequence[flow.Flow]) -> None:
         """
         Toggle mark for flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         for i in flows:
             if i.marked:
@@ -93,6 +111,8 @@ class Core:
     def kill(self, flows: Sequence[flow.Flow]) -> None:
         """
         Kill running flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -107,6 +127,8 @@ class Core:
     def revert(self, flows: Sequence[flow.Flow]) -> None:
         """
         Revert flow changes.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -118,6 +140,9 @@ class Core:
 
     @command.command("flow.set.options")
     def flow_set_options(self) -> Sequence[str]:
+        """
+        `core` addon 中的方法，用于处理 `flow set options` 相关逻辑。
+        """
         return [
             "host",
             "status_code",
@@ -132,6 +157,8 @@ class Core:
     def flow_set(self, flows: Sequence[flow.Flow], attr: str, value: str) -> None:
         """
         Quickly set a number of common values on flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         val: int | str = value
         if attr == "status_code":
@@ -185,6 +212,8 @@ class Core:
     def decode(self, flows: Sequence[flow.Flow], part: str) -> None:
         """
         Decode flows.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -200,6 +229,8 @@ class Core:
     def encode_toggle(self, flows: Sequence[flow.Flow], part: str) -> None:
         """
         Toggle flow encoding on and off, using deflate for encoding.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -225,6 +256,8 @@ class Core:
     ) -> None:
         """
         Encode flows with a specified encoding.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         updated = []
         for f in flows:
@@ -242,6 +275,8 @@ class Core:
     def encode_options(self) -> Sequence[str]:
         """
         The possible values for an encoding specification.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         return ["gzip", "deflate", "br", "zstd"]
 
@@ -249,6 +284,8 @@ class Core:
     def options_load(self, path: mitmproxy.types.Path) -> None:
         """
         Load options from a file.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             optmanager.load_paths(ctx.options, path)
@@ -259,6 +296,8 @@ class Core:
     def options_save(self, path: mitmproxy.types.Path) -> None:
         """
         Save options to a file.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         try:
             optmanager.save(ctx.options, path)
@@ -269,6 +308,8 @@ class Core:
     def options_reset(self) -> None:
         """
         Reset all options to defaults.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         ctx.options.reset()
 
@@ -276,6 +317,8 @@ class Core:
     def options_reset_one(self, name: str) -> None:
         """
         Reset one option to its default value.
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
         """
         if name not in ctx.options:
             raise exceptions.CommandError("No such option: %s" % name)

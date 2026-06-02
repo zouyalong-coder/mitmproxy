@@ -1,5 +1,7 @@
 """
 This addon is responsible for starting/stopping the proxy server sockets/instances specified by the mode option.
+
+中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
 """
 
 from __future__ import annotations
@@ -42,7 +44,13 @@ logger = logging.getLogger(__name__)
 
 
 class Servers:
+    """
+    管理当前启用的代理服务实例集合。
+    """
     def __init__(self, manager: ServerManager):
+        """
+        初始化对象状态。
+        """
         self.changed = signals.AsyncSignal(lambda: None)
         self._instances: dict[mode_specs.ProxyMode, ServerInstance] = dict()
         self._lock = asyncio.Lock()
@@ -50,9 +58,15 @@ class Servers:
 
     @property
     def is_updating(self) -> bool:
+        """
+        `proxyserver` addon 中的方法，用于处理 `is updating` 相关逻辑。
+        """
         return self._lock.locked()
 
     async def update(self, modes: Iterable[mode_specs.ProxyMode]) -> bool:
+        """
+        `proxyserver` addon 中的方法，用于处理 `update` 相关逻辑。
+        """
         all_ok = True
 
         async with self._lock:
@@ -99,12 +113,21 @@ class Servers:
         return all_ok
 
     def __len__(self) -> int:
+        """
+        返回当前集合或视图中的元素数量。
+        """
         return len(self._instances)
 
     def __iter__(self) -> Iterator[ServerInstance]:
+        """
+        迭代当前集合或视图中的元素。
+        """
         return iter(self._instances.values())
 
     def __getitem__(self, mode: str | mode_specs.ProxyMode) -> ServerInstance:
+        """
+        按索引或键读取当前集合中的元素。
+        """
         if isinstance(mode, str):
             mode = mode_specs.ProxyMode.parse(mode)
         return self._instances[mode]
@@ -113,6 +136,8 @@ class Servers:
 class Proxyserver(ServerManager):
     """
     This addon runs the actual proxy server.
+    
+    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
     """
 
     connections: dict[tuple | str, ProxyConnectionHandler]
@@ -122,21 +147,33 @@ class Proxyserver(ServerManager):
     _connect_addr: Address | None = None
 
     def __init__(self):
+        """
+        初始化对象状态。
+        """
         self.connections = {}
         self.servers = Servers(self)
         self.is_running = False
 
     def __repr__(self):
+        """
+        返回适合调试和日志输出的字符串表示。
+        """
         return f"Proxyserver({len(self.connections)} active conns)"
 
     @command.command("proxyserver.active_connections")
     def active_connections(self) -> int:
+        """
+        `proxyserver` addon 中的方法，用于处理 `active connections` 相关逻辑。
+        """
         return len(self.connections)
 
     @contextmanager
     def register_connection(
         self, connection_id: tuple | str, handler: ProxyConnectionHandler
     ):
+        """
+        `proxyserver` addon 中的方法，用于处理 `register connection` 相关逻辑。
+        """
         self.connections[connection_id] = handler
         try:
             yield
@@ -144,6 +181,9 @@ class Proxyserver(ServerManager):
             del self.connections[connection_id]
 
     def load(self, loader):
+        """
+        注册该 addon 暴露的配置项、命令或启动期资源。
+        """
         loader.add_option(
             "store_streamed_bodies",
             bool,
@@ -223,9 +263,15 @@ class Proxyserver(ServerManager):
         )
 
     def running(self):
+        """
+        在 mitmproxy 完成启动后执行运行期初始化。
+        """
         self.is_running = True
 
     def configure(self, updated) -> None:
+        """
+        在相关配置项变化时重新读取、校验并缓存运行参数。
+        """
         if "stream_large_bodies" in updated:
             try:
                 human.parse_size(ctx.options.stream_large_bodies)
@@ -304,15 +350,25 @@ class Proxyserver(ServerManager):
                 )
 
     async def setup_servers(self) -> bool:
-        """Setup proxy servers. This may take an indefinite amount of time to complete (e.g. on permission prompts)."""
+        """
+        Setup proxy servers. This may take an indefinite amount of time to complete (e.g. on permission prompts).
+        
+        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        """
         return await self.servers.update(
             [mode_specs.ProxyMode.parse(m) for m in ctx.options.mode]
         )
 
     def listen_addrs(self) -> list[Address]:
+        """
+        `proxyserver` addon 中的方法，用于处理 `listen addrs` 相关逻辑。
+        """
         return [addr for server in self.servers for addr in server.listen_addrs]
 
     def inject_event(self, event: events.MessageInjected):
+        """
+        向已有连接或 flow 注入用户构造的协议事件。
+        """
         connection_id: str | tuple
         if event.flow.client_conn.transport_protocol != "udp":
             connection_id = event.flow.client_conn.id
@@ -336,6 +392,9 @@ class Proxyserver(ServerManager):
     def inject_websocket(
         self, flow: Flow, to_client: bool, message: bytes, is_text: bool = True
     ):
+        """
+        向已有连接或 flow 注入用户构造的协议事件。
+        """
         if not isinstance(flow, http.HTTPFlow) or not flow.websocket:
             logger.warning("Cannot inject WebSocket messages into non-WebSocket flows.")
             return
@@ -351,6 +410,9 @@ class Proxyserver(ServerManager):
 
     @command.command("inject.tcp")
     def inject_tcp(self, flow: Flow, to_client: bool, message: bytes):
+        """
+        向已有连接或 flow 注入用户构造的协议事件。
+        """
         if not isinstance(flow, tcp.TCPFlow):
             logger.warning("Cannot inject TCP messages into non-TCP flows.")
             return
@@ -363,6 +425,9 @@ class Proxyserver(ServerManager):
 
     @command.command("inject.udp")
     def inject_udp(self, flow: Flow, to_client: bool, message: bytes):
+        """
+        向已有连接或 flow 注入用户构造的协议事件。
+        """
         if not isinstance(flow, udp.UDPFlow):
             logger.warning("Cannot inject UDP messages into non-UDP flows.")
             return
@@ -374,6 +439,9 @@ class Proxyserver(ServerManager):
             logger.warning(str(e))
 
     def server_connect(self, data: server_hooks.ServerConnectionHookData):
+        """
+        处理即将连接上游服务器的事件。
+        """
         if data.server.sockname is None:
             data.server.sockname = self._connect_addr
 

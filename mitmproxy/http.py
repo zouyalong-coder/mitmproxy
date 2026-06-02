@@ -38,10 +38,23 @@ from mitmproxy.websocket import WebSocketData
 
 # While headers _should_ be ASCII, it's not uncommon for certain headers to be utf-8 encoded.
 def _native(x: bytes) -> str:
+    """
+    将 HTTP 头字段中的原始字节转换为 Python 字符串。
+
+    HTTP 头理论上应是 ASCII，但真实世界里经常混入 UTF-8。这里使用
+    `surrogateescape` 保留不可正常解码的字节，避免在展示或脚本访问时丢失
+    原始信息。
+    """
     return x.decode("utf-8", "surrogateescape")
 
 
 def _always_bytes(x: str | bytes) -> bytes:
+    """
+    将字符串或字节统一转换为 HTTP 头内部使用的字节形式。
+
+    与 `_native` 配套使用 UTF-8 和 `surrogateescape`，保证字符串和原始
+    字节之间可以尽量无损往返。
+    """
     return strutils.always_bytes(x, "utf-8", "surrogateescape")
 
 
@@ -120,25 +133,43 @@ class Headers(multidict.MultiDict):  # type: ignore
 
     @staticmethod
     def _reduce_values(values) -> str:
+        """
+        将同名 HTTP 头的多个值折叠为单个展示值。
+
+        普通 HTTP 头按 RFC 语义可以用逗号合并；不能合并的头（例如
+        Set-Cookie）应通过 `get_all()` 读取。
+        """
         # Headers can be folded
         return ", ".join(values)
 
     @staticmethod
     def _kconv(key) -> str:
+        """
+        归一化 HTTP 头名用于大小写不敏感查找。
+        """
         # Headers are case-insensitive
         return key.lower()
 
     def __bytes__(self) -> bytes:
+        """
+        将头字段序列化为 HTTP/1 使用的 CRLF 分隔字节块。
+        """
         if self.fields:
             return b"\r\n".join(b": ".join(field) for field in self.fields) + b"\r\n"
         else:
             return b""
 
     def __delitem__(self, key: str | bytes) -> None:
+        """
+        删除指定头字段，支持字符串或字节形式的头名。
+        """
         key = _always_bytes(key)
         super().__delitem__(key)
 
     def __iter__(self) -> Iterator[str]:
+        """
+        以字符串形式迭代头名。
+        """
         for x in super().__iter__():
             yield _native(x)
 
@@ -165,11 +196,20 @@ class Headers(multidict.MultiDict):  # type: ignore
         return super().set_all(name, values)
 
     def insert(self, index: int, key: str | bytes, value: str | bytes):
+        """
+        在指定位置插入一个原始头字段，同时完成字符串到字节的转换。
+        """
         key = _always_bytes(key)
         value = _always_bytes(value)
         super().insert(index, key, value)
 
     def items(self, multi=False):
+        """
+        返回头字段键值对。
+
+        `multi=False` 时同名头按 `MultiDict` 规则折叠；`multi=True` 时保留
+        所有原始字段顺序和重复项，适合 Set-Cookie 等不能折叠的头。
+        """
         if multi:
             return ((_native(k), _native(v)) for k, v in self.fields)
         else:
@@ -178,6 +218,13 @@ class Headers(multidict.MultiDict):  # type: ignore
 
 @dataclass
 class MessageData(serializable.Serializable):
+    """
+    Request 和 Response 共享的底层可序列化数据容器。
+
+    这个类只保存协议字段，不提供高级访问逻辑；高级属性和编码/解码逻辑在
+    `Message` 上实现。
+    """
+
     http_version: bytes
     headers: Headers
     content: bytes | None
@@ -189,17 +236,31 @@ class MessageData(serializable.Serializable):
     if __debug__:
 
         def __post_init__(self):
+            """
+            在调试模式下校验 dataclass 字段类型。
+            """
             for field in fields(self):
                 val = getattr(self, field.name)
                 typecheck.check_option_type(field.name, val, field.type)
 
     def set_state(self, state):
+        """
+        从序列化状态恢复消息数据。
+
+        headers 和 trailers 在状态中是普通可序列化结构，恢复时需要转回
+        `Headers` 实例。
+        """
         for k, v in state.items():
             if k in ("headers", "trailers") and v is not None:
                 v = Headers.from_state(v)
             setattr(self, k, v)
 
     def get_state(self):
+        """
+        导出可持久化的消息状态。
+
+        Headers 本身也有状态格式，所以这里递归调用其 `get_state()`。
+        """
         state = vars(self).copy()
         state["headers"] = state["headers"].get_state()
         if state["trailers"] is not None:
@@ -208,6 +269,9 @@ class MessageData(serializable.Serializable):
 
     @classmethod
     def from_state(cls, state):
+        """
+        根据序列化状态创建消息数据对象。
+        """
         state["headers"] = Headers.from_state(state["headers"])
         if state["trailers"] is not None:
             state["trailers"] = Headers.from_state(state["trailers"])
@@ -216,6 +280,13 @@ class MessageData(serializable.Serializable):
 
 @dataclass
 class RequestData(MessageData):
+    """
+    HTTP 请求专有的底层数据。
+
+    host/port 是 mitmproxy 归一化后的目标地址；method、scheme、authority、
+    path 保留为字节，方便忠实表达不同 HTTP 版本中的请求行或伪头字段。
+    """
+
     host: str
     port: int
     method: bytes
@@ -226,6 +297,10 @@ class RequestData(MessageData):
 
 @dataclass
 class ResponseData(MessageData):
+    """
+    HTTP 响应专有的底层数据。
+    """
+
     status_code: int
     reason: bytes
 
@@ -235,12 +310,21 @@ class Message(serializable.Serializable):
 
     @classmethod
     def from_state(cls, state):
+        """
+        从序列化状态创建 Request 或 Response。
+        """
         return cls(**state)
 
     def get_state(self):
+        """
+        返回底层 `MessageData` 的可序列化状态。
+        """
         return self.data.get_state()
 
     def set_state(self, state):
+        """
+        用给定状态更新底层 `MessageData`。
+        """
         self.data.set_state(state)
 
     data: MessageData
@@ -268,24 +352,39 @@ class Message(serializable.Serializable):
 
     @http_version.setter
     def http_version(self, http_version: str | bytes) -> None:
+        """
+        设置 HTTP 版本字符串，内部统一保存为字节。
+        """
         self.data.http_version = strutils.always_bytes(
             http_version, "utf-8", "surrogateescape"
         )
 
     @property
     def is_http10(self) -> bool:
+        """
+        当前消息是否属于 HTTP/1.0。
+        """
         return self.data.http_version == b"HTTP/1.0"
 
     @property
     def is_http11(self) -> bool:
+        """
+        当前消息是否属于 HTTP/1.1。
+        """
         return self.data.http_version == b"HTTP/1.1"
 
     @property
     def is_http2(self) -> bool:
+        """
+        当前消息是否属于 HTTP/2。
+        """
         return self.data.http_version == b"HTTP/2.0"
 
     @property
     def is_http3(self) -> bool:
+        """
+        当前消息是否属于 HTTP/3。
+        """
         return self.data.http_version == b"HTTP/3"
 
     @property
@@ -297,6 +396,9 @@ class Message(serializable.Serializable):
 
     @headers.setter
     def headers(self, h: Headers) -> None:
+        """
+        替换消息头对象。
+        """
         self.data.headers = h
 
     @property
@@ -308,6 +410,9 @@ class Message(serializable.Serializable):
 
     @trailers.setter
     def trailers(self, h: Headers | None) -> None:
+        """
+        替换 HTTP trailers。
+        """
         self.data.trailers = h
 
     @property
@@ -325,6 +430,9 @@ class Message(serializable.Serializable):
 
     @raw_content.setter
     def raw_content(self, content: bytes | None) -> None:
+        """
+        设置原始消息体，不进行 Content-Encoding 编码或解码。
+        """
         self.data.content = content
 
     @property
@@ -340,6 +448,9 @@ class Message(serializable.Serializable):
 
     @content.setter
     def content(self, value: bytes | None) -> None:
+        """
+        设置未压缩消息体，并根据当前 Content-Encoding 重新编码保存。
+        """
         self.set_content(value)
 
     @property
@@ -355,9 +466,20 @@ class Message(serializable.Serializable):
 
     @text.setter
     def text(self, value: str | None) -> None:
+        """
+        设置文本消息体，并根据 Content-Type 中的 charset 编码为字节。
+        """
         self.set_text(value)
 
     def set_content(self, value: bytes | None) -> None:
+        """
+        设置未压缩的字节消息体。
+
+        算法上先查看当前 `Content-Encoding`，尝试把传入的明文字节重新编码
+        为 wire format 后保存到 `raw_content`。如果现有编码非法，则删除
+        该头并退回到 identity。最后在没有 Transfer-Encoding 时同步更新
+        Content-Length。
+        """
         if value is None:
             self.raw_content = None
             return
@@ -405,6 +527,13 @@ class Message(serializable.Serializable):
             return self.raw_content
 
     def set_text(self, text: str | None) -> None:
+        """
+        设置文本消息体。
+
+        先根据 Content-Type 推断字符集，再编码为字节并走 `content` setter。
+        如果 Content-Type 中声明的字符集不可用，则回退为 UTF-8，并同步改写
+        Content-Type 的 charset。
+        """
         if text is None:
             self.content = None
             return
@@ -449,6 +578,9 @@ class Message(serializable.Serializable):
 
     @timestamp_start.setter
     def timestamp_start(self, timestamp_start: float) -> None:
+        """
+        设置消息头接收时间戳。
+        """
         self.data.timestamp_start = timestamp_start
 
     @property
@@ -460,6 +592,9 @@ class Message(serializable.Serializable):
 
     @timestamp_end.setter
     def timestamp_end(self, timestamp_end: float | None):
+        """
+        设置消息最后一个字节接收时间戳。
+        """
         self.data.timestamp_end = timestamp_end
 
     def decode(self, strict: bool = True) -> None:
@@ -535,6 +670,13 @@ class Request(Message):
         timestamp_start: float,
         timestamp_end: float | None,
     ):
+        """
+        创建 HTTP 请求对象。
+
+        构造函数接受协议层解析出的原始字段，并为了兼容旧代码自动转换部分
+        历史上可能传入的字符串/字节类型。headers 和 trailers 会统一包装为
+        `Headers`，后续属性访问都基于 `RequestData`。
+        """
         # auto-convert invalid types to retain compatibility with older code.
         if isinstance(host, bytes):
             host = host.decode("idna", "strict")
@@ -572,6 +714,9 @@ class Request(Message):
         )
 
     def __repr__(self) -> str:
+        """
+        返回适合调试日志使用的简短请求描述。
+        """
         if self.host and self.port:
             hostport = f"{self.host}:{self.port}"
         else:
@@ -663,6 +808,9 @@ class Request(Message):
 
     @method.setter
     def method(self, val: str | bytes) -> None:
+        """
+        设置 HTTP 方法，内部统一保存为字节。
+        """
         self.data.method = always_bytes(val, "utf-8", "surrogateescape")
 
     @property
@@ -674,6 +822,9 @@ class Request(Message):
 
     @scheme.setter
     def scheme(self, val: str | bytes) -> None:
+        """
+        设置请求 scheme，例如 http 或 https。
+        """
         self.data.scheme = always_bytes(val, "utf-8", "surrogateescape")
 
     @property
@@ -696,6 +847,12 @@ class Request(Message):
 
     @authority.setter
     def authority(self, val: str | bytes) -> None:
+        """
+        设置请求 authority。
+
+        域名优先按 IDNA 编码保存；如果不是合法 IDNA，则使用 UTF-8 与
+        `surrogateescape` 尽量保留原始值。
+        """
         if isinstance(val, str):
             try:
                 val = val.encode("idna", "strict")
@@ -718,6 +875,9 @@ class Request(Message):
 
     @host.setter
     def host(self, val: str | bytes) -> None:
+        """
+        设置目标主机，并同步已有 Host 头和 authority。
+        """
         self.data.host = always_str(val, "idna", "strict")
         self._update_host_and_authority()
 
@@ -738,6 +898,12 @@ class Request(Message):
 
     @host_header.setter
     def host_header(self, val: None | str | bytes) -> None:
+        """
+        设置请求中的 Host/authority 头。
+
+        HTTP/2 和 HTTP/3 以 `:authority` 为主；HTTP/1 使用 Host 头。这里按
+        版本差异更新对应字段，避免在 h2/h3 中错误创建多余 Host 头。
+        """
         if val is None:
             if self.is_http2 or self.is_http3:
                 self.data.authority = b""
@@ -758,6 +924,9 @@ class Request(Message):
 
     @port.setter
     def port(self, port: int) -> None:
+        """
+        设置目标端口，并同步已有 Host 头和 authority。
+        """
         if not isinstance(port, int):
             raise ValueError(f"Port must be an integer, not {port!r}.")
 
@@ -765,6 +934,13 @@ class Request(Message):
         self._update_host_and_authority()
 
     def _update_host_and_authority(self) -> None:
+        """
+        在 host 或 port 变化后同步 Host 头和 authority。
+
+        算法只更新已经存在的字段：如果请求原本没有 Host 头或 authority，就
+        不主动创建。这样可以尽量保留原始请求形态，同时保证已有目标字段不
+        与 `host`/`port` 脱节。
+        """
         val = url.hostport(self.scheme, self.host, self.port)
 
         # Update host header
@@ -787,6 +963,9 @@ class Request(Message):
 
     @path.setter
     def path(self, val: str | bytes) -> None:
+        """
+        设置请求 path，内部保存为 UTF-8 字节。
+        """
         self.data.path = always_bytes(val, "utf-8", "surrogateescape")
 
     @property
@@ -803,6 +982,9 @@ class Request(Message):
 
     @url.setter
     def url(self, val: str | bytes) -> None:
+        """
+        设置完整 URL，并拆分更新 scheme、host、port 和 path。
+        """
         val = always_str(val, "utf-8", "surrogateescape")
         self.scheme, self.host, self.port, self.path = url.parse(val)  # type: ignore
 
@@ -840,10 +1022,18 @@ class Request(Message):
         return url.unparse(self.scheme, pretty_host, pretty_port, path)
 
     def _get_query(self):
+        """
+        从当前 URL 中解析查询参数，返回 MultiDictView 使用的元组数据。
+        """
         query = urllib.parse.urlparse(self.url).query
         return tuple(url.decode(query))
 
     def _set_query(self, query_data):
+        """
+        将查询参数写回请求 path。
+
+        只替换 query 部分，保留 path、params 和 fragment。
+        """
         query = url.encode(query_data)
         _, _, path, params, _, fragment = urllib.parse.urlparse(self.url)
         self.path = urllib.parse.urlunparse(["", "", path, params, query, fragment])
@@ -859,13 +1049,22 @@ class Request(Message):
 
     @query.setter
     def query(self, value):
+        """
+        替换整个查询参数集合。
+        """
         self._set_query(value)
 
     def _get_cookies(self):
+        """
+        从一个或多个 Cookie 头中解析请求 cookie。
+        """
         h = self.headers.get_all("Cookie")
         return tuple(cookies.parse_cookie_headers(h))
 
     def _set_cookies(self, value):
+        """
+        将 cookie 集合格式化回 Cookie 头。
+        """
         self.headers["cookie"] = cookies.format_cookie_header(value)
 
     @property
@@ -879,6 +1078,9 @@ class Request(Message):
 
     @cookies.setter
     def cookies(self, value):
+        """
+        替换请求 cookie 集合。
+        """
         self._set_cookies(value)
 
     @property
@@ -895,6 +1097,12 @@ class Request(Message):
 
     @path_components.setter
     def path_components(self, components: Iterable[str]):
+        """
+        替换 URL path 的各级路径组件。
+
+        每个组件都会单独 URL-quote，再重新拼接为 path，同时保留原有 params、
+        query 和 fragment。
+        """
         components = map(lambda x: url.quote(x, safe=""), components)
         path = "/" + "/".join(components)
         _, _, _, params, query, fragment = urllib.parse.urlparse(self.url)
@@ -930,6 +1138,12 @@ class Request(Message):
             )
 
     def _get_urlencoded_form(self):
+        """
+        尝试从请求体中解析 application/x-www-form-urlencoded 表单。
+
+        只有 Content-Type 匹配时才解析；解析失败或类型不匹配时返回空集合，
+        让 `urlencoded_form` 呈现为空的可变视图。
+        """
         is_valid_content_type = (
             "application/x-www-form-urlencoded"
             in self.headers.get("content-type", "").lower()
@@ -962,9 +1176,18 @@ class Request(Message):
 
     @urlencoded_form.setter
     def urlencoded_form(self, value):
+        """
+        替换 URL-encoded 表单数据。
+        """
         self._set_urlencoded_form(value)
 
     def _get_multipart_form(self) -> list[tuple[bytes, bytes]]:
+        """
+        尝试从请求体中解析 multipart/form-data 表单。
+
+        multipart 解析依赖 Content-Type 中的 boundary；如果类型不匹配、
+        body 缺失或解析失败，则返回空列表。
+        """
         is_valid_content_type = (
             "multipart/form-data" in self.headers.get("content-type", "").lower()
         )
@@ -978,6 +1201,13 @@ class Request(Message):
         return []
 
     def _set_multipart_form(self, value: list[tuple[bytes, bytes]]) -> None:
+        """
+        将 multipart 表单字段写回请求体。
+
+        如果当前 Content-Type 不是 multipart/form-data，则生成一个随机
+        boundary 并写入 Content-Type。随后使用该 boundary 重新编码整个
+        multipart body。
+        """
         ct = self.headers.get("content-type", "")
         is_valid_content_type = ct.lower().startswith("multipart/form-data")
         if not is_valid_content_type:
@@ -1007,6 +1237,9 @@ class Request(Message):
 
     @multipart_form.setter
     def multipart_form(self, value: list[tuple[bytes, bytes]]) -> None:
+        """
+        替换 multipart 表单数据。
+        """
         self._set_multipart_form(value)
 
 
@@ -1028,6 +1261,13 @@ class Response(Message):
         timestamp_start: float,
         timestamp_end: float | None,
     ):
+        """
+        创建 HTTP 响应对象。
+
+        与 `Request.__init__` 类似，这里接收协议层解析出的原始字段，并为了
+        兼容旧代码转换部分历史类型。headers 和 trailers 会被统一包装为
+        `Headers`。
+        """
         # auto-convert invalid types to retain compatibility with older code.
         if isinstance(http_version, str):
             http_version = http_version.encode("ascii", "strict")
@@ -1053,6 +1293,9 @@ class Response(Message):
         )
 
     def __repr__(self) -> str:
+        """
+        返回适合调试日志使用的简短响应描述。
+        """
         if self.raw_content:
             ct = self.headers.get("content-type", "unknown content type")
             size = human.pretty_size(len(self.raw_content))
@@ -1124,6 +1367,9 @@ class Response(Message):
 
     @status_code.setter
     def status_code(self, status_code: int) -> None:
+        """
+        设置 HTTP 状态码。
+        """
         self.data.status_code = status_code
 
     @property
@@ -1138,14 +1384,23 @@ class Response(Message):
 
     @reason.setter
     def reason(self, reason: str | bytes) -> None:
+        """
+        设置 HTTP reason phrase，内部按 ISO-8859-1 保存。
+        """
         self.data.reason = strutils.always_bytes(reason, "ISO-8859-1")
 
     def _get_cookies(self):
+        """
+        从所有 Set-Cookie 头中解析响应 cookie。
+        """
         h = self.headers.get_all("set-cookie")
         all_cookies = cookies.parse_set_cookie_headers(h)
         return tuple((name, (value, attrs)) for name, value, attrs in all_cookies)
 
     def _set_cookies(self, value):
+        """
+        将响应 cookie 集合格式化回多个 Set-Cookie 头。
+        """
         cookie_headers = []
         for k, v in value:
             header = cookies.format_set_cookie_header([(k, v[0], v[1])])
@@ -1169,6 +1424,9 @@ class Response(Message):
 
     @cookies.setter
     def cookies(self, value):
+        """
+        替换响应 cookie 集合。
+        """
         self._set_cookies(value)
 
     def refresh(self, now=None):
@@ -1232,6 +1490,12 @@ class HTTPFlow(flow.Flow):
     """
 
     def get_state(self) -> serializable.State:
+        """
+        导出 HTTPFlow 的可序列化状态。
+
+        在基础 Flow 状态之外，额外保存 request、response 和 websocket 数据。
+        response/websocket 可能不存在，因此按需写入 None。
+        """
         return {
             **super().get_state(),
             "request": self.request.get_state(),
@@ -1240,6 +1504,9 @@ class HTTPFlow(flow.Flow):
         }
 
     def set_state(self, state: serializable.State) -> None:
+        """
+        从序列化状态恢复 HTTPFlow。
+        """
         self.request = Request.from_state(state.pop("request"))
         self.response = Response.from_state(r) if (r := state.pop("response")) else None
         self.websocket = (
@@ -1248,6 +1515,9 @@ class HTTPFlow(flow.Flow):
         super().set_state(state)
 
     def __repr__(self):
+        """
+        返回包含主要字段的多行调试表示。
+        """
         s = "<HTTPFlow"
         for a in (
             "request",
@@ -1269,15 +1539,26 @@ class HTTPFlow(flow.Flow):
 
     @property
     def mode(self) -> str:  # pragma: no cover
+        """
+        兼容旧 API 的代理模式属性。
+
+        该属性已废弃，新代码应从连接或代理模式上下文获取相关信息。
+        """
         warnings.warn("HTTPFlow.mode is deprecated.", DeprecationWarning, stacklevel=2)
         return getattr(self, "_mode", "regular")
 
     @mode.setter
     def mode(self, val: str) -> None:  # pragma: no cover
+        """
+        设置兼容旧 API 的代理模式属性。
+        """
         warnings.warn("HTTPFlow.mode is deprecated.", DeprecationWarning, stacklevel=2)
         self._mode = val
 
     def copy(self):
+        """
+        深拷贝 HTTPFlow，并确保请求和响应对象也被复制。
+        """
         f = super().copy()
         if self.request:
             f.request = self.request.copy()
