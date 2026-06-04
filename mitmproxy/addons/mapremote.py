@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.mapremote` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按规则把请求 URL 重写到另一个远程 URL 的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `map_remote` 选项。
+- `configure`：`map_remote` 变化时解析并缓存重写规则。
+- `request`：每个 HTTP 请求发往上游前触发，命中规则时重写 `flow.request.url`。
 """
 
 import re
@@ -15,7 +20,10 @@ from mitmproxy.utils.spec import parse_spec
 
 class MapRemoteSpec(NamedTuple):
     """
-    表示 map-remote 的匹配规则和远程替换目标。
+    表示 map-remote 的单条规则。
+
+    `matches` 先用 flow filter 判断是否适用，`subject` 是匹配原 URL 的正则，
+    `replacement` 是替换后的远程 URL 模板。
     """
     matches: flowfilter.TFilter
     subject: str
@@ -38,17 +46,18 @@ def parse_map_remote_spec(option: str) -> MapRemoteSpec:
 
 class MapRemote:
     """
-    `mapremote` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    维护 URL 重写规则，并在 HTTP 请求进入上游前应用。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化已解析的重写规则列表。
         """
         self.replacements: list[MapRemoteSpec] = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `map_remote` 配置项。
         """
         loader.add_option(
             "map_remote",
@@ -63,7 +72,10 @@ class MapRemote:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        当 `map_remote` 更新时重新解析规则，正则非法时抛出 OptionsError 让
+        配置系统回滚本次更新。
         """
         if "map_remote" in updated:
             self.replacements = []
@@ -79,7 +91,10 @@ class MapRemote:
 
     def request(self, flow: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        如果 URL 被重写，设置 `flow.request.url` 会同步更新 Host 头，这是
+        map-remote 改写目标服务器的关键机制。
         """
         if flow.response or flow.error or not flow.live:
             return

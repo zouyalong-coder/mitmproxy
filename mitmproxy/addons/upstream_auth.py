@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.upstream_auth` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+为上游代理或反向代理目标添加 HTTP Basic 认证的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `upstream_auth`。
+- `configure`：认证配置变化时生成 Basic 认证头。
+- `http_connect_upstream`：CONNECT 请求即将发往上游代理时触发。
+- `requestheaders`：普通 HTTP 请求头发往上游前触发。
 """
 
 import base64
@@ -15,7 +21,7 @@ from mitmproxy.utils import strutils
 
 def parse_upstream_auth(auth: str) -> bytes:
     """
-    解析上游代理认证配置，生成用户名和密码。
+    解析 `username:password` 配置并生成 Basic 认证头字节串。
     """
     pattern = re.compile(".+:")
     if pattern.search(auth) is None:
@@ -33,14 +39,16 @@ class UpstreamAuth:
     - Upstream proxy regular requests
     - Reverse proxy regular requests (CONNECT is invalid in this mode)
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：这个 addon 处理的是“mitmproxy 到上游”的认证，不是客户端到
+    mitmproxy 的代理认证。上游代理模式使用 `Proxy-Authorization`，反向代理
+    模式使用普通 `Authorization`。
     """
 
     auth: bytes | None = None
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `upstream_auth` 配置项。
         """
         loader.add_option(
             "upstream_auth",
@@ -54,7 +62,9 @@ class UpstreamAuth:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        认证字符串会在这里预先编码成 header 值，避免每个请求重复处理。
         """
         if "upstream_auth" in updated:
             if ctx.options.upstream_auth is None:
@@ -64,14 +74,19 @@ class UpstreamAuth:
 
     def http_connect_upstream(self, f: http.HTTPFlow):
         """
-        处理即将发往上游代理的 HTTP CONNECT 请求。
+        `http_connect_upstream` 事件：CONNECT 请求发送给上游代理前触发。
+
+        HTTPS 经上游代理建立隧道时，认证必须放在这条 CONNECT 请求上。
         """
         if self.auth:
             f.request.headers["Proxy-Authorization"] = self.auth
 
     def requestheaders(self, f: http.HTTPFlow):
         """
-        处理 HTTP 请求头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `requestheaders` 事件：普通请求头发往上游前触发。
+
+        上游代理处理明文 HTTP 请求时写 `Proxy-Authorization`；反向代理模式
+        直接向目标服务写 `Authorization`。
         """
         if self.auth:
             if (

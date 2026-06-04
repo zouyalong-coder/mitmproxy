@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.block` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按客户端 IP 类型拒绝连接的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `block_global` 和 `block_private`。
+- `client_connected`：客户端 TCP 连接刚进入 mitmproxy 时触发，用于在协议解析前拦截来源。
 """
 
 import ipaddress
@@ -11,11 +15,12 @@ from mitmproxy.proxy import mode_specs
 
 class Block:
     """
-    `block` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    根据客户端地址是否为公网/私网地址决定是否立即拒绝连接。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册连接来源限制选项。
         """
         loader.add_option(
             "block_global",
@@ -38,7 +43,10 @@ class Block:
 
     def client_connected(self, client):
         """
-        处理客户端连接建立事件。
+        `client_connected` 事件：客户端连接建立后、进入具体协议层前触发。
+
+        这里通过设置 `client.error` 终止连接。回环地址和 LocalMode 始终允许，
+        避免阻断本机主动发起的代理流量。
         """
         parts = client.peername[0].rsplit("%", 1)
         address = ipaddress.ip_address(parts[0])

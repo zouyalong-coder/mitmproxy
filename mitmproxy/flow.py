@@ -1,3 +1,11 @@
+"""
+mitmproxy 中所有网络流的基础模型。
+
+`Flow` 抽象了一次可被查看、修改、拦截、回放或保存的网络交互。HTTP、
+TCP、UDP、DNS 等具体流类型都会继承它，并共享连接信息、错误状态、
+用户标记、备份/恢复和暂停/继续等通用机制。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +32,10 @@ class Error(serializable.SerializableDataclass):
     which is represented by a normal `mitmproxy.http.Response` object. This class is
     responsible for indicating errors that fall outside of normal protocol
     communications, like interrupted connections, timeouts, or protocol errors.
+
+    中文说明：这里表示“代理处理链路本身出错”，不是 HTTP 500 这类协议层
+    响应。它会挂在 `Flow.error` 上，用来告诉 UI、脚本和序列化逻辑这条流
+    已经因为连接中断、超时、协议错误等原因失败。
     """
 
     msg: str
@@ -50,6 +62,10 @@ class Flow(serializable.Serializable):
      - mitmproxy.http.HTTPFlow
      - mitmproxy.tcp.TCPFlow
      - mitmproxy.udp.UDPFlow
+
+    中文说明：`Flow` 只管理跨协议的共性状态，不直接处理具体协议内容。
+    具体协议对象负责把自己的请求、响应或消息追加到状态里，然后复用这里的
+    拦截、恢复、复制、序列化和生命周期控制。
     """
 
     client_conn: connection.Client
@@ -130,6 +146,12 @@ class Flow(serializable.Serializable):
         self.comment: str = ""
 
     __types: dict[str, type[Flow]] = {}
+    """
+    已注册的 Flow 子类表。
+
+    `__init_subclass__` 会自动把 `HTTPFlow`、`TCPFlow` 等类型登记进来，
+    反序列化时就可以根据状态里的 `type` 字段恢复成正确的具体 Flow。
+    """
 
     type: ClassVar[
         str
@@ -137,10 +159,19 @@ class Flow(serializable.Serializable):
     """The flow type, for example `http`, `tcp`, or `dns`."""
 
     def __init_subclass__(cls, **kwargs):
+        """
+        自动为 Flow 子类推导类型名并登记到反序列化注册表。
+        """
         cls.type = cls.__name__.removesuffix("Flow").lower()
         Flow.__types[cls.type] = cls
 
     def get_state(self) -> serializable.State:
+        """
+        导出 Flow 的可序列化状态。
+
+        这里会深拷贝 metadata 和 backup，避免调用方拿到内部可变对象后意外
+        修改原始流；具体子类通常会在此基础上追加协议专属字段。
+        """
         state = {
             "version": version.FLOW_FORMAT_VERSION,
             "type": self.type,
@@ -159,6 +190,12 @@ class Flow(serializable.Serializable):
         return state
 
     def set_state(self, state: serializable.State) -> None:
+        """
+        从持久化状态恢复 Flow。
+
+        恢复顺序很重要：先校验版本和类型，再更新连接、错误、标记、备注等
+        通用字段，最后要求状态字典被完全消费，以便及早发现格式漂移。
+        """
         assert state.pop("version") == version.FLOW_FORMAT_VERSION
         assert state.pop("type") == self.type
         self.id = state.pop("id")

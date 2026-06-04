@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.dns_resolver` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+为 DNS/WireGuard 模式提供本地 DNS 解析能力的 addon。
+
+触发点：
+- `load`：注册 nameserver 和 hosts 文件相关选项。
+- `configure`：DNS 选项变化时清空 resolver/name_servers 缓存。
+- `dns_request`：DNS 请求进入代理时触发，A/AAAA 查询本地解析，其余查询转发到上游 DNS。
 """
 
 from __future__ import annotations
@@ -23,11 +28,12 @@ logger = logging.getLogger(__name__)
 
 class DnsResolver:
     """
-    `dns_resolver` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    根据当前代理模式决定 DNS flow 是本地解析还是转发到上游 nameserver。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 DNS 解析选项。
         """
         loader.add_option(
             "dns_use_hosts_file",
@@ -57,7 +63,8 @@ class DnsResolver:
         Returns the operating system's name servers unless custom name servers are set.
         On error, an empty list is returned.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：优先使用用户配置的 `dns_name_servers`，否则读取操作系统
+        nameserver；失败时返回空列表并记录警告。
         """
         try:
             return (
@@ -79,7 +86,8 @@ class DnsResolver:
         Raises:
             MissingNameServers, if name servers are unknown and `dns_use_hosts_file` is disabled.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：有 nameserver 时使用 Rust DNS resolver；只有 hosts 文件可用
+        时退回 `getaddrinfo`；两者都不可用则抛出 MissingNameServers。
         """
         if ns := self.name_servers():
             # We always want to use our own resolver if name server info is available.
@@ -96,7 +104,10 @@ class DnsResolver:
 
     async def dns_request(self, flow: dns.DNSFlow) -> None:
         """
-        处理 DNS 请求事件。
+        DNS `dns_request` 事件：DNS 请求进入代理时触发。
+
+        DnsMode 或 WireGuard 内置 DNS 地址的 A/AAAA 查询会被本地解析并直接设置
+        `flow.response`；其他记录类型则尽量设置 `server_conn.address` 转发上游。
         """
         if self._should_resolve(flow):
             all_ip_lookups = (
@@ -121,7 +132,7 @@ class DnsResolver:
     @staticmethod
     def _should_resolve(flow: dns.DNSFlow) -> bool:
         """
-        根据当前配置和 flow 状态判断是否应执行后续处理。
+        判断当前 DNS flow 是否应由本 addon 接管解析。
         """
         return (
             (
@@ -141,7 +152,7 @@ class DnsResolver:
         message: dns.DNSMessage,
     ) -> dns.DNSMessage:
         """
-        `dns_resolver` addon 中的方法，用于处理 `resolve` 相关逻辑。
+        对单个 DNSMessage 执行 A/AAAA 查询并构造成功或失败响应。
         """
         q = message.question
         assert q
@@ -179,19 +190,19 @@ class Resolver(Protocol):
     """
     async def lookup_ip(self, domain: str) -> list[str]:  # pragma: no cover
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ip` 相关逻辑。
+        查询域名的所有 IP 地址。
         """
         ...
 
     async def lookup_ipv4(self, domain: str) -> list[str]:  # pragma: no cover
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ipv4` 相关逻辑。
+        查询域名的 IPv4 地址。
         """
         ...
 
     async def lookup_ipv6(self, domain: str) -> list[str]:  # pragma: no cover
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ipv6` 相关逻辑。
+        查询域名的 IPv6 地址。
         """
         ...
 
@@ -202,25 +213,25 @@ class GetaddrinfoFallbackResolver(Resolver):
     """
     async def lookup_ip(self, domain: str) -> list[str]:
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ip` 相关逻辑。
+        使用系统 getaddrinfo 查询所有 IP 地址。
         """
         return await self._lookup(domain, socket.AF_UNSPEC)
 
     async def lookup_ipv4(self, domain: str) -> list[str]:
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ipv4` 相关逻辑。
+        使用系统 getaddrinfo 查询 IPv4 地址。
         """
         return await self._lookup(domain, socket.AF_INET)
 
     async def lookup_ipv6(self, domain: str) -> list[str]:
         """
-        `dns_resolver` addon 中的方法，用于处理 `lookup ipv6` 相关逻辑。
+        使用系统 getaddrinfo 查询 IPv6 地址。
         """
         return await self._lookup(domain, socket.AF_INET6)
 
     async def _lookup(self, domain: str, family: socket.AddressFamily) -> list[str]:
         """
-        `dns_resolver` addon 的内部辅助方法。
+        getaddrinfo 兜底查询实现，按 socket 地址族过滤结果。
         """
         addrinfos = await asyncio.get_running_loop().getaddrinfo(
             host=domain,

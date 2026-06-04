@@ -1,5 +1,13 @@
 """
-`mitmproxy.addons.tlsconfig` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+为代理核心提供 TLS/DTLS/QUIC 握手配置的内置 addon。
+
+触发点：
+- `load`：注册 TLS 版本、曲线、cipher、客户端证书请求等选项。
+- `tls_clienthello`：客户端 ClientHello 到达时触发，决定是否先连上游。
+- `tls_start_client/tls_start_server`：TLS/DTLS 握手开始时触发，创建 pyOpenSSL 连接对象。
+- `quic_start_client/quic_start_server`：QUIC TLS 配置开始时触发，填充 aioquic 设置。
+- `running/configure`：初始化/更新证书库并校验 TLS 相关选项。
+- `request`：拦截特殊 CRL URL，请求 mitmproxy 生成的 CRL 文件。
 """
 
 import ipaddress
@@ -74,7 +82,8 @@ def _default_ciphers(
     @SECLEVEL=0 is necessary for TLS 1.1 and below to work,
     see https://github.com/pyca/cryptography/issues/9523
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：低版本 TLS 需要 OpenSSL security level 0 才能正常使用，因此当最小
+    TLS 版本不安全时自动在默认 cipher 列表前加 `@SECLEVEL=0`。
     """
     if min_tls_version in net_tls.INSECURE_TLS_MIN_VERSIONS:
         return _DEFAULT_CIPHERS_WITH_SECLEVEL_0
@@ -130,7 +139,8 @@ class TlsConfig:
     """
     This addon supplies the proxy core with the desired OpenSSL connection objects to negotiate TLS.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：TLSConfig 是 TLS 拦截的配置中心，负责证书选择、上下游 TLS
+    context 创建、ALPN 镜像、SNI/证书校验和 QUIC TLS 参数。
     """
 
     certstore: certs.CertStore = None  # type: ignore
@@ -149,7 +159,7 @@ class TlsConfig:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 TLS/DTLS/QUIC 握手相关选项。
         """
         insecure_tls_min_versions = (
             ", ".join(x.name for x in net_tls.INSECURE_TLS_MIN_VERSIONS[:-1])
@@ -220,7 +230,10 @@ class TlsConfig:
 
     def tls_clienthello(self, tls_clienthello: tls.ClientHelloData):
         """
-        处理客户端 TLS ClientHello 事件。
+        `tls_clienthello` 事件：客户端 ClientHello 解析完成后触发。
+
+        eager 连接策略下会要求先和上游建立 TLS，以便用真实上游证书生成更贴近
+        目标站点的拦截证书。
         """
         conn_context = tls_clienthello.context
         tls_clienthello.establish_server_tls_first = (
@@ -231,7 +244,8 @@ class TlsConfig:
         """
         Establish TLS or DTLS between client and proxy.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：`tls_start_client` 事件，为客户端到 mitmproxy 的 TLS/DTLS
+        连接创建服务端 SSL.Connection，并加载动态生成的证书和私钥。
         """
         if tls_start.ssl_conn is not None:
             return  # a user addon has already provided the pyOpenSSL context.
@@ -298,7 +312,8 @@ class TlsConfig:
         """
         Establish TLS or DTLS between proxy and server.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：`tls_start_server` 事件，为 mitmproxy 到上游服务器的 TLS/DTLS
+        连接创建客户端 SSL.Connection，并配置 SNI、ALPN、证书校验和客户端证书。
         """
         if tls_start.ssl_conn is not None:
             return  # a user addon has already provided the pyOpenSSL context.
@@ -408,7 +423,8 @@ class TlsConfig:
         """
         Establish QUIC between client and proxy.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：`quic_start_client` 事件，为客户端到 mitmproxy 的 QUIC TLS
+        填充证书、私钥、ALPN 和 cipher 设置。
         """
         if tls_start.settings is not None:
             return  # a user addon has already provided the settings.
@@ -453,7 +469,8 @@ class TlsConfig:
         """
         Establish QUIC between proxy and server.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：`quic_start_server` 事件，为 mitmproxy 到上游的 QUIC TLS
+        填充校验策略、SNI、ALPN、CA 配置和 cipher 设置。
         """
         if tls_start.settings is not None:
             return  # a user addon has already provided the settings.
@@ -503,13 +520,16 @@ class TlsConfig:
         # FIXME: We have a weird bug where the contract for configure is not followed and it is never called with
         # confdir or command_history as updated.
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发，确保按当前 confdir 初始化证书库。
         """
         self.configure("confdir")  # pragma: no cover
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：TLS/证书相关选项变化后触发。
+
+        这里加载或重建 CertStore，校验自定义证书、椭圆曲线、TLS 版本和 cipher
+        security level。
         """
         if (
             "certs" in updated
@@ -582,7 +602,7 @@ class TlsConfig:
 
     def _warn_unsupported_version(self, attribute: str, warn_unbound: bool):
         """
-        `tlsconfig` addon 的内部辅助方法。
+        检查当前 OpenSSL 是否支持用户配置的 TLS 版本，并给出日志提示。
         """
         val = net_tls.Version[getattr(ctx.options, attribute)]
         supported_versions = [
@@ -607,7 +627,8 @@ class TlsConfig:
         OpenSSL cipher spec need to specify @SECLEVEL for old TLS versions to work,
         see https://github.com/pyca/cryptography/issues/9523.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：用户自定义 cipher 时不会自动加默认的 `@SECLEVEL=0`，所以这里
+        在低 TLS 版本配置下提醒用户手动加入。
         """
         if side == "client":
             custom_ciphers = ctx.options.ciphers_client
@@ -628,7 +649,7 @@ class TlsConfig:
 
     def crl_path(self) -> str:
         """
-        `tlsconfig` addon 中的方法，用于处理 `crl path` 相关逻辑。
+        返回 mitmproxy 用于替换 CRL Distribution Point 的特殊路径。
         """
         return f"/mitmproxy-{self.certstore.default_ca.serial}.crl"
 
@@ -637,7 +658,8 @@ class TlsConfig:
         This function determines the Common Name (CN), Subject Alternative Names (SANs) and Organization Name
         our certificate should have and then fetches a matching cert from the certstore.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：优先从上游证书复制 CN/SAN/组织名，再补充客户端 SNI、本地地址
+        和目标地址，最后从 CertStore 获取或生成匹配证书。
         """
         altnames: list[x509.GeneralName] = []
         organization: str | None = None
@@ -686,7 +708,9 @@ class TlsConfig:
 
     def request(self, flow: http.HTTPFlow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        如果请求路径命中特殊 CRL token，则直接返回 mitmproxy 的默认 CRL。
         """
         if not flow.live or flow.error or flow.response:
             return
@@ -703,7 +727,8 @@ def _ip_or_dns_name(val: str) -> x509.GeneralName:
     """
     Convert a string into either an x509.IPAddress or x509.DNSName object.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：证书 SAN 需要区分 IPAddress 和 DNSName，这里把字符串转换为
+    cryptography 的对应 GeneralName 类型。
     """
     try:
         ip = ipaddress.ip_address(val)

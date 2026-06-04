@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.browser` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+启动隔离浏览器并自动配置代理的命令型 addon。
+
+触发点：
+- `browser.start` 命令：用户显式启动 Chrome/Chromium 或 Firefox。
+- `done`：mitmproxy 关闭时清理浏览器进程和临时 profile。
+- 本 addon 不监听网络生命周期事件。
 """
 
 import logging
@@ -44,7 +49,7 @@ def find_flatpak_cmd(*search_paths) -> list[str] | None:
 
 class Browser:
     """
-    `browser` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    管理由 mitmproxy 启动的浏览器进程和临时用户数据目录。
     """
     browser: list[subprocess.Popen] = []
     tdir: list[tempfile.TemporaryDirectory] = []
@@ -52,7 +57,7 @@ class Browser:
     @command.command("browser.start")
     def start(self, browser: str = "chrome") -> None:
         """
-        `browser` addon 中的方法，用于处理 `start` 相关逻辑。
+        `browser.start` 命令：启动指定浏览器并指向当前 mitmproxy 监听地址。
         """
         if len(self.browser) > 0:
             logging.log(ALERT, "Starting additional browser")
@@ -69,7 +74,8 @@ class Browser:
         Start an isolated instance of Chrome that points to the currently
         running proxy.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：创建独立 Chrome profile，并通过 `--proxy-server` 指向当前
+        mitmproxy 实例。
         """
         cmd = find_executable_cmd(
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -123,7 +129,8 @@ class Browser:
         Start an isolated instance of Firefox that points to the currently
         running proxy.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：创建独立 Firefox profile，通过 prefs.js 配置 HTTP/HTTPS 代理，
+        并关闭若干联网和遥测功能以减少启动噪声。
         """
         cmd = find_executable_cmd(
             "/Applications/Firefox.app/Contents/MacOS/firefox",
@@ -199,7 +206,7 @@ class Browser:
 
     def done(self):
         """
-        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        `done` 事件：mitmproxy 关闭时触发，终止浏览器进程并删除临时 profile。
         """
         for browser in self.browser:
             browser.kill()

@@ -1,3 +1,11 @@
+"""
+客户端连接与上游服务器连接的元数据模型。
+
+mitmproxy 的真实 socket I/O 由代理服务器层处理，本模块只保存连接的可见
+状态：地址、传输协议、TLS 协商结果、时间戳、错误标记等。Flow 会引用这里
+的 `Client` 和 `Server`，从而把一次协议交互和底层连接生命周期关联起来。
+"""
+
 import dataclasses
 import time
 import uuid
@@ -17,7 +25,12 @@ from mitmproxy.utils import human
 
 
 class ConnectionState(Flag):
-    """The current state of the underlying socket."""
+    """
+    The current state of the underlying socket.
+
+    中文说明：用位标志描述底层 socket 是否还能读、还能写。`OPEN` 是
+    `CAN_READ | CAN_WRITE`，关闭态则两个方向都不可用。
+    """
 
     CLOSED = 0
     CAN_READ = 1
@@ -53,6 +66,9 @@ class Connection(serializable.SerializableDataclass, metaclass=ABCMeta):
 
     The connection object only exposes metadata about the connection, but not the underlying socket object.
     This is intentional, all I/O should be handled by `mitmproxy.proxy.server` exclusively.
+
+    中文说明：连接对象是“状态快照”，不是 socket 包装器。这样脚本和 UI 可以
+    安全读取连接元数据，而不会绕过代理层的事件调度和流控。
     """
 
     peername: Address | None
@@ -63,13 +79,23 @@ class Connection(serializable.SerializableDataclass, metaclass=ABCMeta):
     state: ConnectionState = field(
         default=ConnectionState.CLOSED, metadata={"serialize": False}
     )
-    """The current connection state."""
+    """
+    The current connection state.
+
+    中文说明：运行期状态不参与序列化，历史 flow 从文件恢复时不会假装连接仍然
+    打开；是否存活由当前代理进程负责判断。
+    """
 
     # all connections have a unique id. While
     # f.client_conn == f2.client_conn already holds true for live flows (where we have object identity),
     # we also want these semantics for recorded flows.
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    """A unique UUID to identify the connection."""
+    """
+    A unique UUID to identify the connection.
+
+    中文说明：实时 flow 可以靠对象身份比较连接，但录制/回放的 flow 需要稳定
+    ID 来表达“这是同一条连接”。
+    """
     transport_protocol: TransportProtocol = field(default="tcp")
     """The connection protocol in use."""
     error: str | None = None
@@ -173,7 +199,12 @@ class Connection(serializable.SerializableDataclass, metaclass=ABCMeta):
 
 @dataclass(eq=False, repr=False, kw_only=True)
 class Client(Connection):  # type: ignore[override]
-    """A connection between a client and mitmproxy."""
+    """
+    A connection between a client and mitmproxy.
+
+    中文说明：表示下游客户端到 mitmproxy 的半边连接，记录客户端地址、监听
+    地址、代理模式和 mitmproxy 给客户端使用的证书。
+    """
 
     peername: Address
     """The client's address."""
@@ -261,7 +292,13 @@ class Client(Connection):  # type: ignore[override]
 
 @dataclass(eq=False, repr=False, kw_only=True)
 class Server(Connection):
-    """A connection between mitmproxy and an upstream server."""
+    """
+    A connection between mitmproxy and an upstream server.
+
+    中文说明：表示 mitmproxy 到真实上游或上游代理的半边连接。`address` 是
+    逻辑目标，`peername` 是解析并实际连接到的地址，两者在透明代理、显式代理
+    和上游代理模式下可能不同。
+    """
 
     address: Address | None  # type: ignore
     """
@@ -309,6 +346,12 @@ class Server(Connection):
         return f"Server({human.format_address(self.address)}, state={state.lower()}{tls_state}{local_port})"
 
     def __setattr__(self, name, value):
+        """
+        防止在连接打开后修改会改变路由语义的字段。
+
+        `address` 和 `via` 决定连接目标及是否经过上游代理；一旦 socket 已经
+        打开，再修改它们会让状态和真实连接不一致，所以这里直接拒绝。
+        """
         if name in ("address", "via"):
             connection_open = (
                 self.__dict__.get("state", ConnectionState.CLOSED)

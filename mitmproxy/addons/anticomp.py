@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.anticomp` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+尝试让上游服务器返回未压缩响应体的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `anticomp` 选项。
+- `request`：每个 HTTP 请求发往上游前触发，按需调整 Accept-Encoding。
 """
 
 from mitmproxy import ctx
@@ -7,11 +11,12 @@ from mitmproxy import ctx
 
 class AntiComp:
     """
-    `anticomp` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    通过修改请求头降低响应体被 gzip/br 等压缩的概率，方便查看和替换内容。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `anticomp` 开关。
         """
         loader.add_option(
             "anticomp",
@@ -22,7 +27,9 @@ class AntiComp:
 
     def request(self, flow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求头已解析完成、发往上游前触发。
+
+        开启后调用 `flow.request.anticomp()` 调整压缩相关请求头。
         """
         if ctx.options.anticomp:
             flow.request.anticomp()

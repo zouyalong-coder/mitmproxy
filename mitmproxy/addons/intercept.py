@@ -1,5 +1,13 @@
 """
-`mitmproxy.addons.intercept` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按 flow filter 自动拦截流量的内置 addon。
+
+触发点：
+- `load`：注册拦截开关和过滤表达式。
+- `configure`：过滤表达式变化时重新解析，并同步 `intercept_active`。
+- HTTP：`request`、`response`。
+- TCP/UDP：`tcp_message`、`udp_message`。
+- DNS：`dns_request`、`dns_response`。
+- WebSocket：`websocket_message`。
 """
 
 from typing import Optional
@@ -12,13 +20,13 @@ from mitmproxy import flowfilter
 
 class Intercept:
     """
-    `intercept` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    在多个协议事件点检查 flow filter，命中时调用 `flow.intercept()` 暂停流。
     """
     filt: flowfilter.TFilter | None = None
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册拦截相关选项。
         """
         loader.add_option("intercept_active", bool, False, "Intercept toggle")
         loader.add_option(
@@ -53,7 +61,7 @@ class Intercept:
 
     def process_flow(self, f: flow.Flow) -> None:
         """
-        `intercept` addon 中的方法，用于处理 `process flow` 相关逻辑。
+        对任意协议 flow 执行统一拦截判断。
         """
         if self.should_intercept(f):
             f.intercept()
@@ -62,13 +70,13 @@ class Intercept:
 
     def request(self, f):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
         """
         self.process_flow(f)
 
     def response(self, f):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应返回客户端前触发。
         """
         self.process_flow(f)
 

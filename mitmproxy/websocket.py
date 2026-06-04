@@ -4,6 +4,10 @@ as HTTP flows as well. They can be distinguished from regular HTTP requests by h
 `mitmproxy.http.HTTPFlow.websocket` attribute set.
 
 This module only defines the classes for individual `WebSocketMessage`s and the `WebSocketData` container.
+
+中文说明：mitmproxy 现在把 WebSocket 作为 HTTP 升级后的附属数据保存，一条
+WebSocket 连接会出现在 `HTTPFlow.websocket` 上。本模块只负责保存消息列表、
+关闭信息和单条消息的方向/类型/内容，不负责协议握手本身。
 """
 
 import time
@@ -32,6 +36,10 @@ class WebSocketMessage(serializable.Serializable):
 
     >>> if message.is_text:
     >>>     text = message.text
+
+    中文说明：WebSocket 文本帧和二进制帧最终都以 bytes 保存，避免脚本在
+    不知道真实编码时误把二进制当字符串处理。只有 `is_text` 为真时才应使用
+    `text` 属性。
     """
 
     from_client: bool
@@ -60,6 +68,12 @@ class WebSocketMessage(serializable.Serializable):
         dropped: bool = False,
         injected: bool = False,
     ) -> None:
+        """
+        创建一条 WebSocket 消息记录。
+
+        `dropped` 表示消息被代理拦下不再转发；`injected` 表示消息由 mitmproxy
+        或 addon 注入，不是客户端/服务端真实发出的原始消息。
+        """
         self.from_client = from_client
         self.type = Opcode(type)
         self.content = content
@@ -156,6 +170,9 @@ class WebSocketData(serializable.SerializableDataclass):
     """
     A data container for everything related to a single WebSocket connection.
     This is typically accessed as `mitmproxy.http.HTTPFlow.websocket`.
+
+    中文说明：它是一次 WebSocket 会话的聚合容器，记录所有重组后的消息以及
+    关闭方向、关闭码、关闭原因等收尾信息。
     """
 
     messages: list[WebSocketMessage] = field(default_factory=list)

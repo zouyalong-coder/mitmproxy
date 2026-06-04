@@ -9,6 +9,14 @@ The View:
   removed from the store.
 
 中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
+
+触发点：
+- `load/configure`：注册并应用 view_filter、排序、倒序和焦点跟随选项。
+- HTTP：`requestheaders` 添加新 flow，`response/error` 更新 flow。
+- TCP/UDP：`*_start` 添加 flow，`*_message/*_error/*_end` 更新 flow。
+- DNS：`dns_request` 添加 flow，`dns_response/dns_error` 更新 flow。
+- flow 生命周期：`intercept/resume/kill` 更新对应 flow。
+- `view.*` 命令：由 UI/控制台调用，用于焦点、排序、过滤、增删和设置。
 """
 
 import collections
@@ -52,6 +60,9 @@ from mitmproxy.utils import signals
 class _OrderKey:
     """
     View 排序键的基类。
+
+    排序键会按 flow ID 缓存生成值；当 flow 内容变化可能影响排序时，`refresh`
+    会移除并重新插入该 flow，保持 sorted list 的排序不变量。
     """
     def __init__(self, view):
         """
@@ -102,7 +113,7 @@ class _OrderKey:
 
 class OrderRequestStart(_OrderKey):
     """
-    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    按 flow 创建时间排序。
     """
     def generate(self, f: mitmproxy.flow.Flow) -> float:
         """
@@ -113,7 +124,7 @@ class OrderRequestStart(_OrderKey):
 
 class OrderRequestMethod(_OrderKey):
     """
-    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    按请求方法或协议操作类型排序。
     """
     def generate(self, f: mitmproxy.flow.Flow) -> str:
         """
@@ -131,7 +142,7 @@ class OrderRequestMethod(_OrderKey):
 
 class OrderRequestURL(_OrderKey):
     """
-    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    按 URL、目标地址或 DNS 查询名排序。
     """
     def generate(self, f: mitmproxy.flow.Flow) -> str:
         """
@@ -149,7 +160,7 @@ class OrderRequestURL(_OrderKey):
 
 class OrderKeySize(_OrderKey):
     """
-    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    按 flow 已知内容大小排序。
     """
     def generate(self, f: mitmproxy.flow.Flow) -> int:
         """
@@ -190,8 +201,12 @@ def _sig_view_remove(flow: mitmproxy.flow.Flow, index: int) -> None: ...
 
 class View(collections.abc.Sequence):
     """
-    `view` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    管理所有 flow 的底层 store，以及经过过滤/排序后的可见 view。
+
+    `_store` 保存所有已知 flow，`_view` 只保存当前过滤条件下可见的 flow；
+    Focus 和 Settings 都依赖这里的增删信号保持一致。
     """
+
     def __init__(self) -> None:
         """
         初始化对象状态。
@@ -239,7 +254,7 @@ class View(collections.abc.Sequence):
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 view 过滤、排序和焦点跟随选项。
         """
         loader.add_option(
             "view_filter", Optional[str], None, "Limit the view to matching flows."
@@ -260,7 +275,7 @@ class View(collections.abc.Sequence):
 
     def store_count(self):
         """
-        `view` addon 中的方法，用于处理 `store count` 相关逻辑。
+        返回底层 store 中的 flow 数量，不受当前过滤条件影响。
         """
         return len(self._store)
 
@@ -268,7 +283,7 @@ class View(collections.abc.Sequence):
         """
         Reverses an index, if needed
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：把面向用户的索引转换为底层 `_view` 索引，支持倒序视图。
         """
         if self.order_reversed:
             if idx < 0:
@@ -349,7 +364,7 @@ class View(collections.abc.Sequence):
         the view, negative from the end of the view, so that 0 is the first
         flow, -1 is the last flow.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.focus.go`，把焦点移动到指定偏移。
         """
         if len(self) == 0:
             return
@@ -366,7 +381,7 @@ class View(collections.abc.Sequence):
         """
         Set focus to the next flow.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.focus.next`，把焦点移动到下一条可见 flow。
         """
         if self.focus.index is not None:
             idx = self.focus.index + 1
@@ -380,7 +395,7 @@ class View(collections.abc.Sequence):
         """
         Set focus to the previous flow.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.focus.prev`，把焦点移动到上一条可见 flow。
         """
         if self.focus.index is not None:
             idx = self.focus.index - 1
@@ -395,14 +410,14 @@ class View(collections.abc.Sequence):
         """
         Choices supported by the view_order option.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.order.options`，返回可用排序键用于补全。
         """
         return list(sorted(self.orders.keys()))
 
     @command.command("view.order.reverse")
     def set_reversed(self, boolean: bool) -> None:
         """
-        更新当前 addon 状态中的指定数据。
+        `view.order.reverse` 命令：设置是否倒序展示当前 view。
         """
         self.order_reversed = boolean
         self.sig_view_refresh.send()
@@ -412,7 +427,7 @@ class View(collections.abc.Sequence):
         """
         Sets the current view order.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.order.set`，重建 sorted list 使用新的排序键。
         """
         if order_key not in self.orders:
             raise exceptions.CommandError("Unknown flow order: %s" % order_key)
@@ -427,7 +442,7 @@ class View(collections.abc.Sequence):
         """
         Returns the current view order.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.order`，返回当前排序键名称。
         """
         order = ""
         for k in self.orders.keys():
@@ -441,7 +456,7 @@ class View(collections.abc.Sequence):
         """
         Sets the current view filter.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.filter.set`，解析 flow filter 并刷新 view。
         """
         filt = None
         if filter_expr:
@@ -453,7 +468,7 @@ class View(collections.abc.Sequence):
 
     def set_filter(self, flt: flowfilter.TFilter | None):
         """
-        更新当前 addon 状态中的指定数据。
+        设置当前过滤器并重新计算可见 view。
         """
         self.filter = flt or flowfilter.match_all
         self._refilter()
@@ -464,7 +479,7 @@ class View(collections.abc.Sequence):
         """
         Clears both the store and view.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.clear`，同时清空底层 store 和可见 view。
         """
         self._store.clear()
         self._view.clear()
@@ -476,7 +491,7 @@ class View(collections.abc.Sequence):
         """
         Clears only the unmarked flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.clear_unmarked`，只移除未标记 flow。
         """
         for flow in self._store.copy().values():
             if not flow.marked:
@@ -491,7 +506,7 @@ class View(collections.abc.Sequence):
         """
         Get a value from the settings store for the specified flow.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.settings.getval`，读取单个 flow 的 UI 设置值。
         """
         return self.settings[flow].get(key, default)
 
@@ -501,7 +516,7 @@ class View(collections.abc.Sequence):
         Toggle a boolean value in the settings store, setting the value to
         the string "true" or "false".
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.settings.setval.toggle`，切换 flow 的布尔型 UI 设置。
         """
         updated = []
         for f in flows:
@@ -517,7 +532,7 @@ class View(collections.abc.Sequence):
         """
         Set a value in the settings store for the specified flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.settings.setval`，为一组 flow 写入 UI 设置值。
         """
         updated = []
         for f in flows:
@@ -532,7 +547,7 @@ class View(collections.abc.Sequence):
         Duplicates the specified flows, and sets the focus to the first
         duplicate.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.flows.duplicate`，复制 flow 并聚焦第一个副本。
         """
         dups = [f.copy() for f in flows]
         if dups:
@@ -545,7 +560,7 @@ class View(collections.abc.Sequence):
         """
         Removes the flow from the underlying store and the view.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.flows.remove`，从 store/view 移除 flow，必要时先 kill live flow。
         """
         for f in flows:
             if f.id in self._store:
@@ -567,7 +582,7 @@ class View(collections.abc.Sequence):
         """
         Resolve a flow list specification to an actual list of flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.flows.resolve`，把 `@all`、`@focus`、filter 等规格解析成 flow 列表。
         """
         if flow_spec == "@all":
             return [i for i in self._store.values()]
@@ -594,7 +609,7 @@ class View(collections.abc.Sequence):
     @command.command("view.flows.create")
     def create(self, method: str, url: str) -> None:
         """
-        `view` addon 中的方法，用于处理 `create` 相关逻辑。
+        `view.flows.create` 命令：手动创建一个新的 HTTPFlow 并加入 view。
         """
         try:
             req = http.Request.make(method.upper(), url)
@@ -618,7 +633,7 @@ class View(collections.abc.Sequence):
         """
         Load flows into the view, without processing them with addons.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.flows.load`，从 dump 文件加载 flow 到 view，但不触发其他 addon 生命周期。
         """
         try:
             with open(path, "rb") as f:
@@ -637,7 +652,7 @@ class View(collections.abc.Sequence):
         Adds a flow to the state. If the flow already exists, it is
         ignored.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：事件 hook 和命令都会调用这里新增 flow；重复 ID 会被忽略。
         """
         for f in flows:
             if f.id not in self._store:
@@ -653,7 +668,7 @@ class View(collections.abc.Sequence):
         Get flow with the given id from the store.
         Returns None if the flow is not found.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：按 flow ID 从底层 store 查找，不受当前过滤 view 影响。
         """
         return self._store.get(flow_id)
 
@@ -663,7 +678,7 @@ class View(collections.abc.Sequence):
         """
         Returns view length.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.properties.length`，返回当前可见 view 长度。
         """
         return len(self)
 
@@ -672,7 +687,7 @@ class View(collections.abc.Sequence):
         """
         Returns true if view is in marked mode.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.properties.marked`，返回是否处于仅显示标记 flow 模式。
         """
         return self.show_marked
 
@@ -681,7 +696,7 @@ class View(collections.abc.Sequence):
         """
         Toggle whether to show marked views only.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.properties.marked.toggle`，切换仅显示标记 flow 模式。
         """
         self.show_marked = not self.show_marked
         self._refilter()
@@ -691,14 +706,17 @@ class View(collections.abc.Sequence):
         """
         Is this 0 <= index < len(self)?
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `view.properties.inbounds`，判断索引是否在当前 view 范围内。
         """
         return 0 <= index < len(self)
 
     # Event handlers
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：view 相关选项变化后触发。
+
+        过滤器变化会重建可见 view；排序或倒序变化会刷新展示顺序；焦点跟随选项
+        控制新 flow 到来时是否自动聚焦。
         """
         if "view_filter" in updated:
             filt = None
@@ -721,103 +739,103 @@ class View(collections.abc.Sequence):
 
     def requestheaders(self, f):
         """
-        处理 HTTP 请求头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `requestheaders` 事件：请求头解析完成时触发，把 HTTP flow 加入 view。
         """
         self.add([f])
 
     def error(self, f):
         """
-        处理 HTTP flow 的协议或连接错误事件。
+        HTTP `error` 事件：HTTP flow 出错时触发，刷新已有 flow 状态。
         """
         self.update([f])
 
     def response(self, f):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应返回客户端前触发，刷新已有 flow 状态。
         """
         self.update([f])
 
     def intercept(self, f):
         """
-        处理 flow 被拦截的事件。
+        `intercept` 事件：flow 被暂停时触发，刷新 view 中状态。
         """
         self.update([f])
 
     def resume(self, f):
         """
-        处理 flow 从拦截状态恢复的事件。
+        `resume` 事件：flow 从拦截状态恢复时触发。
         """
         self.update([f])
 
     def kill(self, f):
         """
-        处理 flow 被终止的事件。
+        `kill` 事件：flow 被终止时触发。
         """
         self.update([f])
 
     def tcp_start(self, f):
         """
-        处理 TCP flow 开始事件。
+        TCP `tcp_start` 事件：TCP flow 创建时触发，加入 view。
         """
         self.add([f])
 
     def tcp_message(self, f):
         """
-        处理 TCP 消息事件。
+        TCP `tcp_message` 事件：TCP 消息到达时触发，刷新 view。
         """
         self.update([f])
 
     def tcp_error(self, f):
         """
-        处理 TCP flow 错误事件。
+        TCP `tcp_error` 事件：TCP flow 出错时触发，刷新 view。
         """
         self.update([f])
 
     def tcp_end(self, f):
         """
-        处理 TCP flow 正常结束事件。
+        TCP `tcp_end` 事件：TCP flow 正常结束时触发，刷新 view。
         """
         self.update([f])
 
     def udp_start(self, f):
         """
-        处理 UDP flow 开始事件。
+        UDP `udp_start` 事件：UDP flow 创建时触发，加入 view。
         """
         self.add([f])
 
     def udp_message(self, f):
         """
-        处理 UDP 消息事件。
+        UDP `udp_message` 事件：UDP 数据报到达时触发，刷新 view。
         """
         self.update([f])
 
     def udp_error(self, f):
         """
-        处理 UDP flow 错误事件。
+        UDP `udp_error` 事件：UDP flow 出错时触发，刷新 view。
         """
         self.update([f])
 
     def udp_end(self, f):
         """
-        处理 UDP flow 正常结束事件。
+        UDP `udp_end` 事件：UDP flow 正常结束时触发，刷新 view。
         """
         self.update([f])
 
     def dns_request(self, f):
         """
-        处理 DNS 请求事件。
+        DNS `dns_request` 事件：DNS 请求进入代理时触发，加入 view。
         """
         self.add([f])
 
     def dns_response(self, f):
         """
-        处理 DNS 响应事件。
+        DNS `dns_response` 事件：DNS 响应返回客户端前触发，刷新 view。
         """
         self.update([f])
 
     def dns_error(self, f):
         """
-        处理 DNS flow 错误事件。
+        DNS `dns_error` 事件：DNS flow 出错时触发，刷新 view。
         """
         self.update([f])
 
@@ -825,7 +843,8 @@ class View(collections.abc.Sequence):
         """
         Updates a list of flows. If flow is not in the state, it's ignored.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：所有更新类 hook 最终走到这里。它会根据当前过滤器决定 flow
+        是否应出现在 view 中，并在排序键变化时刷新 sorted list 位置。
         """
         for f in flows:
             if f.id in self._store:
@@ -856,7 +875,7 @@ class Focus:
     """
     Tracks a focus element within a View.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：跟踪当前 UI 焦点 flow，并监听 view 增删刷新事件来保持焦点有效。
     """
 
     def __init__(self, v: View) -> None:

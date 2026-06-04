@@ -1,5 +1,8 @@
 """
-`mitmproxy.addons.disable_h2c` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+禁用明文 HTTP/2 h2c 升级的内置 addon。
+
+触发点：
+- `request`：HTTP 请求发往上游前触发，删除 h2c Upgrade 头或 kill prior knowledge 请求。
 """
 
 import logging
@@ -16,12 +19,13 @@ class DisableH2C:
     Some clients might use HTTP/2 Prior Knowledge to directly initiate a session
     by sending the connection preface. We just kill those flows.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：mitmproxy 当前只支持 TLS 上的 HTTP/2。这个 addon 在请求阶段阻止
+    客户端把明文 HTTP/1.1 连接升级成 h2c，避免后续协议层收到无法处理的帧。
     """
 
     def process_flow(self, f):
         """
-        `disable_h2c` addon 中的方法，用于处理 `process flow` 相关逻辑。
+        检查并处理 h2c Upgrade 或 HTTP/2 prior knowledge 请求。
         """
         if f.request.headers.get("upgrade", "") == "h2c":
             logging.warning(
@@ -49,6 +53,6 @@ class DisableH2C:
 
     def request(self, f):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
         """
         self.process_flow(f)

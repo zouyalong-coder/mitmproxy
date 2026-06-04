@@ -75,10 +75,12 @@ _iterate_map: dict[type[flow.Flow], Callable[[Any], TEventGenerator]] = {
 }
 
 
+# 为什么没有找到 proxy 状态下的调用，目前只看到读文件后调用
 def iterate(f: flow.Flow) -> TEventGenerator:
     try:
         e = _iterate_map[type(f)]
     except KeyError as err:
         raise TypeError(f"Unknown flow type: {f.__class__.__name__}") from err
     else:
+        # yield from 是什么意思？
         yield from e(f)

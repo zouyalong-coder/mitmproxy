@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.cut` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+从 flow 中抽取指定字段的命令型 addon。
+
+触发点：
+- `cut`、`cut.save`、`cut.clip` 命令：由用户/UI 调用。
+- 本 addon 不监听网络生命周期事件，只读取现有 flow 的属性路径。
 """
 
 import csv
@@ -98,7 +102,7 @@ def extract_str(cut: str, f: flow.Flow) -> str:
 
 class Cut:
     """
-    `cut` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    提供 `cut`、`cut.save` 和 `cut.clip` 命令，从 flow 中抽取字段。
     """
 
     @command.command("cut")
@@ -116,7 +120,8 @@ class Cut:
         or "false", "bytes" are preserved, and all other values are
         converted to strings.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `cut`。`cuts` 是属性路径列表，例如
+        `request.url`、`response.status_code` 或 `request.header[host]`。
         """
         ret: list[list[str | bytes]] = []
         for f in flows:
@@ -137,7 +142,8 @@ class Cut:
         path is prefixed with a "+", values are appended if there is an
         existing file.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `cut.save`。单值时保留原始 bytes，多值时输出
+        CSV。
         """
         append = False
         if path.startswith("+"):
@@ -182,7 +188,7 @@ class Cut:
         format is UTF-8 encoded CSV. If there is exactly one row and one
         column, the data is written to file as-is, with raw bytes preserved.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `cut.clip`，把抽取结果写入系统剪贴板。
         """
         v: str | bytes
         fp = io.StringIO(newline="")

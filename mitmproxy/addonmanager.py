@@ -110,6 +110,8 @@ class Loader:
 def traverse(chain):
     """
     Recursively traverse an addon chain.
+
+    DFS 遍历 addon 树
     """
     for a in chain:
         yield a
@@ -243,9 +245,13 @@ class AddonManager:
     def _iter_hooks(self, addon, event: hooks.Hook):
         """
         Enumerate all hook callables belonging to the given addon
+
+        通过 event.name 查找对应的 hook 函数，实际上就是 addon 上的同名方法
         """
         assert isinstance(event, hooks.Hook)
+        # 树遍历查找触发此事件的 handler, 这里很像 GUI 的事件，它会一级级地往上 popup，保证一个事件在该addon 树上被所有对应的 handler 响应
         for a in traverse([addon]):
+            # 每一个 addon，它的事件对应一个方法。
             func = getattr(a, event.name, None)
             if func:
                 if callable(func):
@@ -269,6 +275,7 @@ class AddonManager:
             res = func(*event.args())
             # Support both async and sync hook functions
             if res is not None and inspect.isawaitable(res):
+                # 保证异步任务能触发
                 await res
 
     def invoke_addon_sync(self, addon, event: hooks.Hook):
@@ -276,6 +283,7 @@ class AddonManager:
         Invoke an event on an addon and all its children.
         """
         for addon, func in self._iter_hooks(addon, event):
+            # 不允许在同步上下文中调用异步方法，会导致不好管理和内存泄漏
             if inspect.iscoroutinefunction(func):
                 raise exceptions.AddonManagerError(
                     f"Async handler {event.name} ({addon}) cannot be called from sync context"
@@ -285,6 +293,8 @@ class AddonManager:
     async def trigger_event(self, event: hooks.Hook):
         """
         Asynchronously trigger an event across all addons.
+
+        通过 event.name 触发所有事件，event.name 可以显式指定，也可以由 hook 名字去掉 hook 后的下划线风格来确定。
         """
         for i in self.chain:
             try:

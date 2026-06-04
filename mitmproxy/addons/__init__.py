@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.addons` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+mitmproxy 默认内置 addon 的装配入口。
+
+触发点：
+- `default_addons()` 由 master 初始化流程调用，返回默认 addon 实例列表。
+- 这里不直接处理网络事件；真正的事件触发发生在各 addon 类的方法中。
 """
 
 from mitmproxy.addons import anticache

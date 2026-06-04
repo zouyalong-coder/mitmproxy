@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.export` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+把单个 flow 导出为 curl、HTTPie 或原始 HTTP 字节的命令型 addon。
+
+触发点：
+- `load`：注册导出选项。
+- `export.formats`、`export.file`、`export.clip`、`export` 命令：由用户/UI 调用。
+- 本 addon 不监听网络生命周期事件，只读取现有 flow 并生成外部表示。
 """
 
 import logging
@@ -35,7 +40,8 @@ def pop_headers(request: http.Request) -> None:
     """
     Remove some headers that are redundant for curl/httpie export.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：删除 curl/httpie 会自动处理或不应重复发送的头，例如
+    Content-Length 和可由目标 URL 推导出的 Host。
     """
     request.headers.pop("content-length", None)
 
@@ -59,7 +65,7 @@ def cleanup_response(f: flow.Flow) -> http.Response:
 
 def request_content_for_console(request: http.Request) -> str:
     """
-    `export` addon 中的函数，用于处理 `request content for console` 相关逻辑。
+    将请求体转换为可安全嵌入 shell 命令的字符串。
     """
     try:
         text = request.get_text(strict=True)
@@ -165,7 +171,8 @@ def raw(f: flow.Flow, separator=b"\r\n\r\n") -> bytes:
     """
     Return either the request or response if only one exists, otherwise return both
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：如果请求和响应都存在，则用分隔符拼接；WebSocket flow 还会附加
+    已格式化的 WebSocket 消息。
     """
     request_present = (
         isinstance(f, http.HTTPFlow) and f.request and f.request.raw_content is not None
@@ -200,11 +207,12 @@ formats: dict[str, Callable[[flow.Flow], str | bytes]] = dict(
 
 class Export:
     """
-    `export` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    注册导出命令，并把格式名分派到具体格式化函数。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册导出 curl 时是否保留原始 IP 的选项。
         """
         loader.add_option(
             "export_preserve_original_ip",
@@ -224,7 +232,7 @@ class Export:
         """
         Return a list of the supported export formats.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `export.formats`，用于 UI/命令补全展示可用格式。
         """
         return list(sorted(formats.keys()))
 
@@ -233,7 +241,7 @@ class Export:
         """
         Export a flow to path.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `export.file`，把指定格式内容写到文件。
         """
         if format not in formats:
             raise exceptions.CommandError("No such export format: %s" % format)
@@ -252,7 +260,7 @@ class Export:
         """
         Export a flow to the system clipboard.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `export.clip`，把导出结果写入系统剪贴板。
         """
         content = self.export_str(format, f)
         try:
@@ -265,7 +273,8 @@ class Export:
         """
         Export a flow and return the result.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `export`，返回导出结果字符串，供 UI 显示或其他
+        命令复用。
         """
         if format not in formats:
             raise exceptions.CommandError("No such export format: %s" % format)

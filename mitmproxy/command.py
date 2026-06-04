@@ -1,5 +1,9 @@
 """
 This module manages and invokes typed commands.
+
+中文说明：mitmproxy 的控制台、Web UI 和 addon 可以通过统一的命令系统调用
+功能。命令函数用类型标注声明参数和返回值，本模块负责注册、解析字符串参数、
+类型转换、调用函数并校验返回值。
 """
 
 import functools
@@ -23,6 +27,12 @@ from mitmproxy.command_lexer import unquote
 
 
 def verify_arg_signature(f: Callable, args: Iterable[Any], kwargs: dict) -> None:
+    """
+    校验给定参数是否能绑定到函数签名。
+
+    这里还不做 mitmproxy 命令类型转换，只利用 Python 的 inspect 签名机制检查
+    参数数量、关键字等调用形状是否正确。
+    """
     sig = inspect.signature(f, eval_str=True)
     try:
         sig.bind(*args, **kwargs)
@@ -51,6 +61,13 @@ def _empty_as_none(x: Any) -> Any:
 
 
 class CommandParameter(NamedTuple):
+    """
+    命令参数的轻量描述。
+
+    `kind` 保留 Python 参数种类，尤其用于识别 `*args` 这种可变位置参数，
+    以便帮助信息和参数解析展示正确形态。
+    """
+
     name: str
     type: type
     kind: inspect._ParameterKind = inspect.Parameter.POSITIONAL_OR_KEYWORD
@@ -63,6 +80,13 @@ class CommandParameter(NamedTuple):
 
 
 class Command:
+    """
+    已注册命令的运行时包装器。
+
+    它把原始函数、命令名、函数签名、帮助文本和类型校验放在一起。调用命令时
+    先把字符串参数按类型标注解析为 Python 对象，再执行函数并校验返回类型。
+    """
+
     name: str
     manager: "CommandManager"
     signature: inspect.Signature
@@ -115,6 +139,12 @@ class Command:
         return f"{self.name} {params}{ret}"
 
     def prepare_args(self, args: Sequence[str]) -> inspect.BoundArguments:
+        """
+        将命令行/控制台传入的字符串参数转换为函数实参。
+
+        参数先绑定到函数签名，再根据每个参数的类型标注调用 `parsearg()`；
+        可变位置参数会逐个转换，最后应用默认值。
+        """
         try:
             bound_arguments = self.signature.bind(*args)
         except TypeError:
@@ -159,12 +189,26 @@ class Command:
 
 
 class ParseResult(NamedTuple):
+    """
+    部分命令解析结果。
+
+    用于命令补全和输入提示：`value` 是已解析文本，`type` 是推断出的命令类型，
+    `valid` 表示当前片段是否已经满足类型要求。
+    """
+
     value: str
     type: type
     valid: bool
 
 
 class CommandManager:
+    """
+    命令注册表和解析入口。
+
+    `collect_commands()` 从 addon 中收集带 `command_name` 的方法，`add()` 注册
+    单个命令，`parse_partial()` 支持控制台补全，`call()` 负责按名字执行命令。
+    """
+
     commands: dict[str, Command]
 
     def __init__(self, master):

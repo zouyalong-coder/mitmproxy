@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.keepserving` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+批处理模式下决定任务完成后是否自动退出的 addon。
+
+触发点：
+- `load`：注册 `keepserving` 选项。
+- `running`：mitmproxy 启动完成后，如果存在读取/回放任务且未要求持续服务，则启动 watcher。
+- `watch`：后台任务定期轮询 readfile/replay/proxyserver 命令，任务结束后调用 shutdown。
 """
 
 from __future__ import annotations
@@ -12,11 +17,12 @@ from mitmproxy.utils import asyncio_utils
 
 class KeepServing:
     """
-    `keepserving` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    监控批处理任务是否完成，并在适当时关闭 mitmproxy。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册是否在批处理任务后继续服务的开关。
         """
         loader.add_option(
             "keepserving",
@@ -34,7 +40,9 @@ class KeepServing:
         # the addon may report that replay is finished but not the entire response has been sent yet.
         # (https://github.com/mitmproxy/mitmproxy/issues/7569)
         """
-        `keepserving` addon 中的方法，用于处理 `keepgoing` 相关逻辑。
+        判断当前是否仍有读取、重放或活跃代理连接需要等待。
+
+        这里通过命令系统查询其他 addon 状态，避免直接依赖它们的内部字段。
         """
         checks = [
             "readfile.reading",
@@ -46,13 +54,13 @@ class KeepServing:
 
     def shutdown(self):  # pragma: no cover
         """
-        `keepserving` addon 中的方法，用于处理 `shutdown` 相关逻辑。
+        触发 master 关闭。
         """
         ctx.master.shutdown()
 
     async def watch(self):
         """
-        `keepserving` addon 中的方法，用于处理 `watch` 相关逻辑。
+        后台 watcher：定期检查是否还需要继续运行，不需要时关闭 master。
         """
         while True:
             await asyncio.sleep(0.1)
@@ -61,7 +69,10 @@ class KeepServing:
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发。
+
+        只有在配置了 client replay、server replay 或 rfile 且未开启 keepserving
+        时，才启动自动退出 watcher。
         """
         opts = [
             ctx.options.client_replay,

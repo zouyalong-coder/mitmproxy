@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.eventstore` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+把日志事件保存在内存中的 UI 支撑 addon。
+
+触发点：
+- logging `emit`：日志系统产生记录时由 `CallbackLogger` 接收。
+- `eventstore.clear` 命令：清空内存日志。
+- `done`：mitmproxy 关闭时卸载日志 handler。
+- 本 addon 不监听网络生命周期事件。
 """
 
 import asyncio
@@ -15,11 +21,12 @@ from mitmproxy.utils import signals
 
 class EventStore:
     """
-    维护 `eventstore` addon 的内存状态或历史记录。
+    维护固定长度的日志环形缓冲区，并通过 signal 通知 UI 刷新。
     """
+
     def __init__(self, size: int = 10000) -> None:
         """
-        初始化对象状态。
+        初始化日志缓冲区并安装回调式 logging handler。
         """
         self.data: collections.deque[LogEntry] = collections.deque(maxlen=size)
         self.sig_add = signals.SyncSignal(lambda entry: None)
@@ -30,13 +37,13 @@ class EventStore:
 
     def done(self):
         """
-        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        `done` 事件：mitmproxy 关闭时触发，卸载 logging handler。
         """
         self.logger.uninstall()
 
     def _add_log(self, entry: LogEntry) -> None:
         """
-        `eventstore` addon 的内部辅助方法。
+        logging handler 回调：把新日志加入缓冲区并发送新增信号。
         """
         self.data.append(entry)
         self.sig_add.send(entry)
@@ -44,7 +51,7 @@ class EventStore:
     @property
     def size(self) -> int | None:
         """
-        `eventstore` addon 中的方法，用于处理 `size` 相关逻辑。
+        返回日志缓冲区最大容量。
         """
         return self.data.maxlen
 
@@ -53,7 +60,7 @@ class EventStore:
         """
         Clear the event log.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `eventstore.clear`，清空后发送 refresh 信号。
         """
         self.data.clear()
         self.sig_refresh.send()
@@ -61,8 +68,9 @@ class EventStore:
 
 class CallbackLogger(log.MitmLogHandler):
     """
-    把日志记录转发给回调函数的 logging handler。
+    把 Python logging 记录转发给事件存储回调的 handler。
     """
+
     def __init__(
         self,
         callback: Callable[[LogEntry], None],
@@ -77,7 +85,7 @@ class CallbackLogger(log.MitmLogHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """
-        `eventstore` addon 中的方法，用于处理 `emit` 相关逻辑。
+        logging `emit` 回调：格式化日志并安全投递回主事件循环。
         """
         entry = LogEntry(
             msg=self.format(record),

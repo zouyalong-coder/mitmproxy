@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.modifybody` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按正则替换 HTTP 请求体或响应体的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `modify_body`。
+- `configure`：`modify_body` 或 `stream_large_bodies` 变化时解析规则/提示冲突。
+- `request`：HTTP 请求体完整可用且发往上游前触发。
+- `response`：HTTP 响应体完整可用且返回客户端前触发。
 """
 
 import logging
@@ -17,17 +23,18 @@ logger = logging.getLogger(__name__)
 
 class ModifyBody:
     """
-    `modifybody` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    维护 body 替换规则，并在请求/响应阶段对内容做正则替换。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化已解析的替换规则列表。
         """
         self.replacements: list[ModifySpec] = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `modify_body` 配置项。
         """
         loader.add_option(
             "modify_body",
@@ -42,7 +49,10 @@ class ModifyBody:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        规则会在这里预解析，替换内容以 `@` 开头时会预检查文件是否可读；
+        同时提醒用户流式大 body 不会被此 addon 修改。
         """
         if "modify_body" in updated:
             self.replacements = []
@@ -70,7 +80,7 @@ class ModifyBody:
 
     def request(self, flow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求体已读取、发往上游前触发。
         """
         if flow.response or flow.error or not flow.live:
             return
@@ -78,7 +88,7 @@ class ModifyBody:
 
     def response(self, flow):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应体已读取、返回客户端前触发。
         """
         if flow.error or not flow.live:
             return
@@ -86,7 +96,10 @@ class ModifyBody:
 
     def run(self, flow):
         """
-        `modifybody` addon 中的方法，用于处理 `run` 相关逻辑。
+        对当前 flow 的请求体或响应体应用替换规则。
+
+        如果 `flow.response` 已存在则修改响应体，否则修改请求体。替换值可以是
+        配置里的字面量，也可以来自 `@file` 指定的文件内容。
         """
         for spec in self.replacements:
             if spec.matches(flow):

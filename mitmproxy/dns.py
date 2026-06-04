@@ -1,3 +1,12 @@
+"""
+DNS 报文与 DNSFlow 的数据模型。
+
+本模块负责把 DNS 查询、资源记录、响应码和原始二进制记录数据转换为
+mitmproxy 可序列化、可展示、可脚本修改的对象。重点阅读 `Message`、
+`Question` 和 `ResourceRecord`：它们分别对应一整个 DNS 报文、查询问题和
+回答/授权/附加资源记录。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -31,6 +40,13 @@ from mitmproxy.net.dns.https_records import SVCParamKeys
 
 @dataclass
 class Question(serializable.SerializableDataclass):
+    """
+    DNS Question 区段中的单个查询问题。
+
+    `name` 是被查询的域名，`type` 是 A/AAAA/HTTPS 等记录类型，`class_`
+    通常是 IN。`class_` 末尾带下划线是为了避开 Python 关键字 `class`。
+    """
+
     HEADER: ClassVar[struct.Struct] = struct.Struct("!HH")
 
     name: str
@@ -62,6 +78,14 @@ class Question(serializable.SerializableDataclass):
 
 @dataclass
 class ResourceRecord(serializable.SerializableDataclass):
+    """
+    DNS 资源记录。
+
+    `data` 始终保存 wire format 的原始字节；`text`、`ipv4_address`、
+    `domain_name`、`https_alpn` 等属性只是针对不同记录类型的便捷视图。
+    这种设计可以同时支持常见记录的易读访问和未知记录类型的无损保留。
+    """
+
     DEFAULT_TTL: ClassVar[int] = 60
     HEADER: ClassVar[struct.Struct] = struct.Struct("!HHIH")
 
@@ -108,6 +132,12 @@ class ResourceRecord(serializable.SerializableDataclass):
 
     @property
     def https_alpn(self) -> tuple[bytes, ...] | None:
+        """
+        读取 HTTPS/SVCB 记录里的 ALPN 参数。
+
+        DNS HTTPS 记录把 ALPN 列表编码为“长度字节 + 协议名”的连续字节串，
+        这里拆成 Python tuple，方便 addon 直接判断是否包含 h2、h3 等协议。
+        """
         record = https_records.unpack(self.data)
         alpn_bytes = record.params.get(SVCParamKeys.ALPN.value, None)
         if alpn_bytes is not None:
@@ -123,6 +153,12 @@ class ResourceRecord(serializable.SerializableDataclass):
 
     @https_alpn.setter
     def https_alpn(self, alpn: Iterable[bytes] | None) -> None:
+        """
+        更新 HTTPS/SVCB 记录里的 ALPN 参数。
+
+        传入 `None` 表示删除该参数；否则重新按 wire format 打包并写回
+        `data`，保持资源记录的底层表示一致。
+        """
         record = https_records.unpack(self.data)
         if alpn is None:
             record.params.pop(SVCParamKeys.ALPN.value, None)
@@ -151,6 +187,12 @@ class ResourceRecord(serializable.SerializableDataclass):
         self.data = https_records.pack(record)
 
     def _data_json(self) -> str | HTTPSRecordJSON:
+        """
+        将不同类型的 RDATA 转成适合 UI/API 展示的值。
+
+        已知记录类型会解析成 IP、域名、文本或 HTTPS 结构；未知或解析失败的
+        记录保留为十六进制字符串，避免丢失原始数据。
+        """
         try:
             match self.type:
                 case types.A:
@@ -252,6 +294,14 @@ class ResourceRecord(serializable.SerializableDataclass):
 # comments are taken from rfc1035
 @dataclass
 class DNSMessage(serializable.SerializableDataclass):
+    """
+    一整个 DNS 查询或响应报文。
+
+    这个 dataclass 对应 RFC 1035 的头部标志位和四个 section：
+    questions、answers、authorities、additionals。`query` 用来区分请求与
+    响应，`id` 用于把响应匹配回请求。
+    """
+
     HEADER: ClassVar[struct.Struct] = struct.Struct("!HHHHHH")
 
     id: int
@@ -312,8 +362,13 @@ class DNSMessage(serializable.SerializableDataclass):
 
     @property
     def question(self) -> Question | None:
-        """DNS practically only supports a single question at the
-        same time, so this is a shorthand for this."""
+        """
+        DNS practically only supports a single question at the
+        same time, so this is a shorthand for this.
+
+        中文说明：实际使用中 DNS 报文通常只有一个 question，因此这里提供便捷
+        属性；如果出现多个 question，则返回 `None` 让调用方显式处理。
+        """
         if len(self.questions) == 1:
             return self.questions[0]
         return None
@@ -329,6 +384,12 @@ class DNSMessage(serializable.SerializableDataclass):
         )
 
     def fail(self, response_code: int) -> DNSMessage:
+        """
+        基于当前请求构造一个错误响应。
+
+        该方法复制请求的 id、op_code 和 question，并把响应码设置为指定错误；
+        `NOERROR` 不是错误码，因此会被拒绝。
+        """
         if response_code == response_codes.NOERROR:
             raise ValueError("response_code must be an error code.")
         return DNSMessage(
@@ -563,7 +624,12 @@ class DNSMessage(serializable.SerializableDataclass):
 
 
 class DNSFlow(flow.Flow):
-    """A DNSFlow is a collection of DNS messages representing a single DNS query."""
+    """
+    A DNSFlow is a collection of DNS messages representing a single DNS query.
+
+    中文说明：DNSFlow 通常由一个 request 和一个可选 response 组成，继承
+    `Flow` 后就能和 HTTP/TCP/UDP 一样被拦截、保存、回放和展示。
+    """
 
     request: DNSMessage
     """The DNS request."""

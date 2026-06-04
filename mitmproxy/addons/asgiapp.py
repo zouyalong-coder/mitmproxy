@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.asgiapp` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+在 mitmproxy 内托管 ASGI/WSGI 应用的 addon 基类。
+
+触发点：
+- `request`：每个 HTTP 请求发往上游前触发；如果 host/port 匹配本应用，
+  则直接调用 ASGI 应用并把返回值写入 `flow.response`。
+- `receive`/`send`：不是 mitmproxy hook，而是 ASGI 应用调用的协议回调。
 """
 
 import asyncio
@@ -23,12 +28,13 @@ class ASGIApp:
         - This implementation will block and wait until the entire HTTP response is completed before sending out data.
         - It currently only implements the HTTP protocol (Lifespan and WebSocket are unimplemented).
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：这个 addon 把某个 host/port 绑定到本地 Python Web 应用。
+    命中后会短路代理转发，不再访问上游服务器。
     """
 
     def __init__(self, asgi_app, host: str, port: int | None):
         """
-        初始化对象状态。
+        初始化托管应用和匹配的 host/port。
         """
         asgi_app = asgiref.compatibility.guarantee_single_callable(asgi_app)
         self.asgi_app, self.host, self.port = asgi_app, host, port
@@ -36,7 +42,7 @@ class ASGIApp:
     @property
     def name(self) -> str:
         """
-        `asgiapp` addon 中的方法，用于处理 `name` 相关逻辑。
+        返回 addon 名称，用 host/port 区分多个托管应用。
         """
         return f"asgiapp:{self.host}:{self.port}"
 
@@ -54,7 +60,9 @@ class ASGIApp:
 
     async def request(self, flow: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        如果 `should_serve()` 命中，就调用本地 ASGI 应用生成响应。
         """
         if self.should_serve(flow):
             await serve(self.asgi_app, flow)
@@ -62,11 +70,15 @@ class ASGIApp:
 
 class WSGIApp(ASGIApp):
     """
-    `asgiapp` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    WSGI 应用适配器。
+
+    通过 `asgiref.wsgi.WsgiToAsgi` 把 WSGI 应用包装为 ASGI，再复用
+    `ASGIApp` 的 request hook。
     """
+
     def __init__(self, wsgi_app, host: str, port: int | None):
         """
-        初始化对象状态。
+        初始化 WSGI 应用并转换为 ASGI callable。
         """
         asgi_app = asgiref.wsgi.WsgiToAsgi(wsgi_app)
         super().__init__(asgi_app, host, port)
@@ -125,7 +137,9 @@ async def serve(app, flow: http.HTTPFlow):
     """
     Serves app on flow.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：这是 ASGI 执行入口，由 `ASGIApp.request()` 在 host/port 命中时
+    调用。它把 flow 转成 scope，并用 receive/send 回调在 ASGI 协议和
+    `flow.response` 之间搬运数据。
     """
 
     scope = make_scope(flow)
@@ -135,7 +149,10 @@ async def serve(app, flow: http.HTTPFlow):
 
     async def receive():
         """
-        `asgiapp` addon 中的函数，用于处理 `receive` 相关逻辑。
+        ASGI `receive` 回调：应用拉取请求体时触发。
+
+        mitmproxy 已经把请求体放在 `flow.request.raw_content` 中，所以这里第一
+        次返回完整 body，后续等待请求结束并返回 disconnect。
         """
         nonlocal received_body
         if not received_body:
@@ -152,7 +169,10 @@ async def serve(app, flow: http.HTTPFlow):
 
     async def send(event):
         """
-        `asgiapp` addon 中的函数，用于处理 `send` 相关逻辑。
+        ASGI `send` 回调：应用发送响应头或响应体时触发。
+
+        `http.response.start` 创建 `flow.response`，`http.response.body`
+        逐段追加响应体。
         """
         if event["type"] == "http.response.start":
             flow.response = http.Response.make(

@@ -1,7 +1,14 @@
 """
 Write flow objects to a HAR file
 
-中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
+中文说明：把 HTTP flow 导出为 HAR 1.2 格式，供浏览器开发者工具或性能分析
+工具读取。
+
+触发点：
+- `save.har` 命令：用户显式导出选中的 flows。
+- `load/configure`：注册并应用 `hardump` 与 `save_stream_filter`。
+- `response/error/websocket_end`：开启 `hardump` 时收集待导出的 HTTP flow。
+- `done`：mitmproxy 关闭时把收集的 flow 写出到 HAR。
 """
 
 import base64
@@ -33,11 +40,12 @@ logger = logging.getLogger(__name__)
 
 class SaveHar:
     """
-    `savehar` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    维护 HAR 导出所需的 flow 缓存和过滤器。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化待导出的 flow 列表和可选过滤器。
         """
         self.flows: list[flow.Flow] = []
         self.filt: flowfilter.TFilter | None = None
@@ -47,7 +55,8 @@ class SaveHar:
         """
         Export flows to an HAR (HTTP Archive) file.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `save.har`。`.zhar` 会额外 zlib 压缩，其余路径
+        写入普通 JSON HAR。
         """
 
         har = json.dumps(self.make_har(flows), indent=4).encode()
@@ -62,7 +71,9 @@ class SaveHar:
 
     def make_har(self, flows: Sequence[flow.Flow]) -> dict:
         """
-        `savehar` addon 中的方法，用于处理 `make har` 相关逻辑。
+        将一组 flow 转换为 HAR 顶层 JSON 结构。
+
+        HAR 只支持 HTTP 条目，非 HTTP flow 会被跳过。
         """
         entries = []
         skipped = 0
@@ -94,7 +105,7 @@ class SaveHar:
 
     def load(self, loader: Loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册退出时自动保存 HAR 的 `hardump` 选项。
         """
         loader.add_option(
             "hardump",
@@ -109,7 +120,9 @@ class SaveHar:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        `save_stream_filter` 同时复用于 hardump；关闭 hardump 时清空内存缓存。
         """
         if "save_stream_filter" in updated:
             if ctx.options.save_stream_filter:
@@ -128,26 +141,28 @@ class SaveHar:
         # websocket flows will receive a websocket_end,
         # we don't want to persist them here already
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应返回客户端前触发。
+
+        开启 `hardump` 时收集普通 HTTP flow；WebSocket flow 等连接结束后再收集。
         """
         if flow.websocket is None:
             self._save_flow(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
         """
-        处理 HTTP flow 的协议或连接错误事件。
+        HTTP `error` 事件：HTTP flow 出错时触发，按响应流程收集。
         """
         self.response(flow)
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
         """
-        处理 WebSocket 连接结束事件。
+        WebSocket `websocket_end` 事件：WebSocket 连接结束后触发，收集完整会话。
         """
         self._save_flow(flow)
 
     def _save_flow(self, flow: http.HTTPFlow) -> None:
         """
-        保存当前 flow 或 addon 状态。
+        在 `hardump` 开启且过滤器命中时缓存 flow，等待 `done` 统一导出。
         """
         if ctx.options.hardump:
             flow_matches = self.filt is None or self.filt(flow)
@@ -156,7 +171,9 @@ class SaveHar:
 
     def done(self):
         """
-        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        `done` 事件：mitmproxy 关闭时触发。
+
+        如果配置了 `hardump`，把内存中收集的 flow 输出到 stdout 或指定文件。
         """
         if ctx.options.hardump:
             if ctx.options.hardump == "-":
@@ -169,7 +186,8 @@ class SaveHar:
         """
         Creates HAR entry from flow
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：把单个 HTTPFlow 转换为 HAR entry。`servers_seen` 用于识别复用
+        的上游连接，避免给同一连接上的后续请求重复计算 connect/ssl 时间。
         """
 
         if flow.server_conn in servers_seen:
@@ -331,7 +349,8 @@ class SaveHar:
         """
         Formats the response's cookie header to list of cookies
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：把 `Set-Cookie`/Cookie 头转换为 HAR cookie 对象列表，供
+        `flow_entry()` 组装响应条目。
         """
         cookie_list = response.cookies.items(multi=True)
         rv = []

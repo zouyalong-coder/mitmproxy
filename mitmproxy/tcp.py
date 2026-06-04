@@ -1,3 +1,11 @@
+"""
+TCP 流的轻量数据模型。
+
+TCP 本质上是字节流，没有应用层“消息”边界。mitmproxy 为了让事件钩子、
+UI 和序列化更容易处理，会把传输过程中观察到的字节块包装成 `TCPMessage`，
+再挂到 `TCPFlow.messages` 上。
+"""
+
 import time
 
 from mitmproxy import connection
@@ -11,9 +19,19 @@ class TCPMessage(serializable.Serializable):
     Note that TCP is *stream-based* and not *message-based*.
     For practical purposes the stream is chunked into messages here,
     but you should not rely on message boundaries.
+
+    中文说明：这里的 message 只是 mitmproxy 处理流式数据时切出来的片段，
+    不能等同于协议层报文。编写 addon 时应把它视为“这一刻收到/发送的一段
+    字节”。
     """
 
     def __init__(self, from_client, content, timestamp=None):
+        """
+        创建一个 TCP 字节片段。
+
+        `from_client` 标记方向，`content` 是原始字节，`timestamp` 缺省时使用
+        当前时间，方便 UI 和日志按时间展示。
+        """
         self.from_client = from_client
         self.content = content
         self.timestamp = timestamp or time.time()
@@ -37,6 +55,9 @@ class TCPMessage(serializable.Serializable):
 class TCPFlow(flow.Flow):
     """
     A TCPFlow is a simplified representation of a TCP session.
+
+    中文说明：TCPFlow 复用 `Flow` 的连接、错误和拦截机制，只额外维护一个
+    `messages` 列表，用来按观察顺序保存双向字节片段。
     """
 
     messages: list[TCPMessage]

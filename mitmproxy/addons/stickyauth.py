@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.stickyauth` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按主机记住并复用 Authorization 头的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `stickyauth` 选项。
+- `configure`：过滤表达式变化时重新解析。
+- `request`：每个 HTTP 请求发往上游前触发，记录或补充 Authorization 头。
 """
 
 from typing import Optional
@@ -11,18 +16,19 @@ from mitmproxy import flowfilter
 
 class StickyAuth:
     """
-    `stickyauth` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    在用户首次认证后记住某个 host 的 Authorization 头，并复用到后续请求。
     """
+
     def __init__(self):
         """
-        初始化对象状态。
+        初始化过滤器和 host 到 Authorization 值的缓存。
         """
         self.flt = None
         self.hosts = {}
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `stickyauth` 过滤表达式。
         """
         loader.add_option(
             "stickyauth",
@@ -33,7 +39,9 @@ class StickyAuth:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        `stickyauth` 是 flow filter 字符串，解析失败会拒绝本次配置更新。
         """
         if "stickyauth" in updated:
             if ctx.options.stickyauth:
@@ -46,7 +54,10 @@ class StickyAuth:
 
     def request(self, flow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        如果当前请求自带 Authorization，则按 host 记住；如果没有但请求匹配
+        过滤器，则尝试复用同 host 的历史认证头。
         """
         if self.flt:
             host = flow.request.host

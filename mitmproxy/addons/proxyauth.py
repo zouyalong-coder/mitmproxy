@@ -1,5 +1,12 @@
 """
-`mitmproxy.addons.proxyauth` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+要求客户端向 mitmproxy 进行代理认证的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `proxyauth` 配置项。
+- `configure`：认证配置变化时选择对应 Validator。
+- `socks5_auth`：SOCKS5 用户名/密码认证阶段触发。
+- `http_connect`：客户端发起 HTTP CONNECT 隧道时触发，认证通过后记住整条连接。
+- `requestheaders`：普通 HTTP 请求头解析完成后触发，校验或复用连接级认证。
 """
 
 from __future__ import annotations
@@ -28,13 +35,16 @@ REALM = "mitmproxy"
 
 class ProxyAuth:
     """
-    `proxyauth` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    统一处理 HTTP 代理认证和 SOCKS5 认证。
+
+    HTTP CONNECT 认证成功后，后续同一连接上的请求会通过 `authenticated`
+    缓存直接视为已认证；普通 HTTP 请求则逐次检查认证头。
     """
     validator: Validator | None = None
 
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化连接级认证缓存。
         """
         self.authenticated: MutableMapping[connection.Client, tuple[str, str]] = (
             weakref.WeakKeyDictionary()
@@ -43,7 +53,7 @@ class ProxyAuth:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `proxyauth` 配置项。
         """
         loader.add_option(
             "proxyauth",
@@ -60,7 +70,9 @@ class ProxyAuth:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        根据配置格式选择认证器：`any`、htpasswd 文件、LDAP 或单用户密码。
         """
         if "proxyauth" in updated:
             auth = ctx.options.proxyauth
@@ -80,7 +92,9 @@ class ProxyAuth:
 
     def socks5_auth(self, data: modes.Socks5AuthData) -> None:
         """
-        处理 SOCKS5 用户名/密码认证事件。
+        `socks5_auth` 事件：SOCKS5 握手中的用户名/密码认证阶段触发。
+
+        校验成功后设置 `data.valid`，并把该客户端连接记为已认证。
         """
         if self.validator and self.validator(data.username, data.password):
             data.valid = True
@@ -88,7 +102,9 @@ class ProxyAuth:
 
     def http_connect(self, f: http.HTTPFlow) -> None:
         """
-        处理客户端发来的 HTTP CONNECT 代理指令。
+        HTTP `http_connect` 事件：客户端请求建立 CONNECT 隧道时触发。
+
+        CONNECT 认证通过后，同一 TCP 连接上的后续隧道流量不再重复要求认证。
         """
         if self.validator and self.authenticate_http(f):
             # Make a note that all further requests over this connection are ok.
@@ -96,7 +112,10 @@ class ProxyAuth:
 
     def requestheaders(self, f: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `requestheaders` 事件：请求头解析完成、请求体读取前触发。
+
+        普通 HTTP 代理请求在这里认证；重放请求跳过认证，避免回放历史流量时
+        被当前代理认证配置阻断。
         """
         if self.validator:
             # Is this connection authenticated by a previous HTTP CONNECT?
@@ -114,7 +133,8 @@ class ProxyAuth:
         If valid credentials are found, the matching authentication header is removed.
         In no or invalid credentials are found, flow.response is set to an error page.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：根据当前代理模式选择认证头，解析 Basic 凭据并调用
+        `validator`。认证成功后删除认证头，避免把代理凭据继续发送给上游。
         """
         assert self.validator
         username = None
@@ -179,7 +199,8 @@ def is_http_proxy(f: http.HTTPFlow) -> bool:
         - True, if authentication is done as if mitmproxy is a proxy
         - False, if authentication is done as if mitmproxy is an HTTP server
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：Regular/Upstream 模式下 mitmproxy 表现为代理，应使用
+    Proxy-Authorization；其他模式下更像普通 HTTP 服务，使用 Authorization。
     """
     return isinstance(
         f.client_conn.proxy_mode, (mode_specs.RegularMode, mode_specs.UpstreamMode)
@@ -190,7 +211,7 @@ def mkauth(username: str, password: str, scheme: str = "basic") -> str:
     """
     Craft a basic auth string
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：生成 `Basic <base64(username:password)>` 形式的认证头值。
     """
     v = binascii.b2a_base64((username + ":" + password).encode("utf8")).decode("ascii")
     return scheme + " " + v
@@ -201,7 +222,8 @@ def parse_http_basic_auth(s: str) -> tuple[str, str, str]:
     Parse a basic auth header.
     Raises a ValueError if the input is invalid.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：只接受 Basic 认证方案，并把 base64 解码后的内容拆成用户名和
+    密码；格式不合法时抛出 ValueError。
     """
     scheme, authinfo = s.split()
     if scheme.lower() != "basic":
@@ -219,7 +241,8 @@ class Validator(ABC):
     """
     Base class for all username/password validators.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：所有认证后端都实现 `__call__`，让主流程可以用统一方式校验
+    用户名和密码。
     """
 
     @abstractmethod

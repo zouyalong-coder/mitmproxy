@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.core` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+mitmproxy 的核心命令 addon。
+
+触发点：
+- `configure`：选项变化时做跨选项校验。
+- `set`、`flow.*`、`options.*` 命令：由控制台、Web UI、快捷键或其他 addon 调用。
+- 本模块基本不监听网络生命周期事件，主要负责修改 flow/option 后触发 `UpdateHook`。
 """
 
 import logging
@@ -25,11 +30,14 @@ LISTEN_PORT = 8080
 
 class Core:
     """
-    `core` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    提供通用 flow 操作、编码/解码和选项读写命令。
     """
+
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        这里校验会影响全局行为的配置组合，例如客户端证书路径是否存在。
         """
         opts = ctx.options
         if opts.add_upstream_certs_to_client_chain and not opts.upstream_cert:
@@ -52,7 +60,8 @@ class Core:
         are emptied. Boolean values can be true, false or toggle.
         Multiple values are concatenated with a single space.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `set`，最终调用 `ctx.options.set()` 并复用选项
+        系统的类型转换和回滚机制。
         """
         if value:
             specs = [f"{option}={v}" for v in value]
@@ -68,7 +77,7 @@ class Core:
         """
         Resume flows if they are intercepted.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.resume`，恢复被 intercept 暂停的 flow。
         """
         intercepted = [i for i in flows if i.intercepted]
         for f in intercepted:
@@ -81,7 +90,7 @@ class Core:
         """
         Mark flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.mark`，设置用户标记后触发 UpdateHook。
         """
         updated = []
         if not (marker == "" or marker in emoji.emoji):
@@ -98,7 +107,7 @@ class Core:
         """
         Toggle mark for flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.mark.toggle`，在默认标记和无标记之间切换。
         """
         for i in flows:
             if i.marked:
@@ -112,7 +121,7 @@ class Core:
         """
         Kill running flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.kill`，只会 kill 当前仍可终止的 live flow。
         """
         updated = []
         for f in flows:
@@ -128,7 +137,7 @@ class Core:
         """
         Revert flow changes.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.revert`，恢复此前 `backup()` 保存的状态。
         """
         updated = []
         for f in flows:
@@ -141,7 +150,7 @@ class Core:
     @command.command("flow.set.options")
     def flow_set_options(self) -> Sequence[str]:
         """
-        `core` addon 中的方法，用于处理 `flow set options` 相关逻辑。
+        `flow.set.options` 命令：返回 `flow.set` 支持的字段名，用于补全。
         """
         return [
             "host",
@@ -158,7 +167,7 @@ class Core:
         """
         Quickly set a number of common values on flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.set`，用于快速修改常见请求/响应字段。
         """
         val: int | str = value
         if attr == "status_code":
@@ -213,7 +222,8 @@ class Core:
         """
         Decode flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.decode`，对 request/response 等 part 调用
+        `decode()`。
         """
         updated = []
         for f in flows:
@@ -230,7 +240,8 @@ class Core:
         """
         Toggle flow encoding on and off, using deflate for encoding.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.encode.toggle`，在 identity 和 deflate 之间
+        切换。
         """
         updated = []
         for f in flows:
@@ -257,7 +268,7 @@ class Core:
         """
         Encode flows with a specified encoding.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.encode`，仅在当前未编码时应用指定编码。
         """
         updated = []
         for f in flows:
@@ -276,7 +287,7 @@ class Core:
         """
         The possible values for an encoding specification.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `flow.encode.options`，用于命令参数补全。
         """
         return ["gzip", "deflate", "br", "zstd"]
 
@@ -285,7 +296,7 @@ class Core:
         """
         Load options from a file.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `options.load`，从 YAML 配置文件载入选项。
         """
         try:
             optmanager.load_paths(ctx.options, path)
@@ -297,7 +308,7 @@ class Core:
         """
         Save options to a file.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `options.save`，把当前选项写入文件。
         """
         try:
             optmanager.save(ctx.options, path)
@@ -309,7 +320,7 @@ class Core:
         """
         Reset all options to defaults.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `options.reset`，恢复所有选项默认值。
         """
         ctx.options.reset()
 
@@ -318,7 +329,7 @@ class Core:
         """
         Reset one option to its default value.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `options.reset.one`，恢复单个选项默认值。
         """
         if name not in ctx.options:
             raise exceptions.CommandError("No such option: %s" % name)

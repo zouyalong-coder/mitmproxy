@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.update_alt_svc` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+在反向代理模式下改写 Alt-Svc 响应头的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `keep_alt_svc_header`。
+- `responseheaders`：HTTP 响应头解析完成、响应体读取前触发。
 """
 
 import re
@@ -14,18 +18,19 @@ HOST_PATTERN = r"([a-zA-Z0-9.-]*:\d{1,5})"
 
 def update_alt_svc_header(header: str, port: int) -> str:
     """
-    改写 Alt-Svc 头，避免客户端绕过 mitmproxy 直接使用 HTTP/3 等替代服务。
+    改写 Alt-Svc 头中的 host:port，使替代服务仍指向 mitmproxy 监听端口。
     """
     return re.sub(HOST_PATTERN, f":{port}", header)
 
 
 class UpdateAltSvc:
     """
-    `update_alt_svc` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    防止反向代理响应中的 Alt-Svc 让客户端绕过 mitmproxy 直连真实服务。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册是否保留原始 Alt-Svc 的开关。
         """
         loader.add_option(
             "keep_alt_svc_header",
@@ -36,7 +41,10 @@ class UpdateAltSvc:
 
     def responseheaders(self, flow: HTTPFlow):
         """
-        处理 HTTP 响应头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `responseheaders` 事件：响应头解析完成、响应体读取前触发。
+
+        只在 ReverseMode 中处理；默认把 Alt-Svc 里的端口改成当前 mitmproxy
+        监听端口，让客户端继续通过代理访问替代服务。
         """
         assert flow.response
         if (

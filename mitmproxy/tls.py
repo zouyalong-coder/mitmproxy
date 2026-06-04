@@ -1,3 +1,11 @@
+"""
+TLS 握手事件中使用的数据模型和 ClientHello 解析工具。
+
+mitmproxy 在决定是否拦截 TLS、如何生成证书、是否先连接上游服务器时，需要
+读取 ClientHello 里的 SNI、ALPN、扩展和密码套件。本模块把原始握手字节包装
+成便于 addon 和代理层读取的对象，并定义 TLS 相关事件携带的数据结构。
+"""
+
 import io
 from dataclasses import dataclass
 
@@ -14,12 +22,21 @@ from mitmproxy.proxy import context
 class ClientHello:
     """
     A TLS ClientHello is the first message sent by the client when initiating TLS.
+
+    中文说明：ClientHello 决定了目标主机名、客户端支持的应用层协议、密码套件
+    和扩展。mitmproxy 会基于这些信息决定是否直通、是否先连上游以及如何构造
+    给客户端看的证书。
     """
 
     _raw_bytes: bytes
 
     def __init__(self, raw_client_hello: bytes, dtls: bool = False):
-        """Create a TLS ClientHello object from raw bytes."""
+        """
+        Create a TLS ClientHello object from raw bytes.
+
+        中文说明：根据 `dtls` 选择不同的 Kaitai 解析器；原始字节仍保存在
+        `_raw_bytes`，用于后续生成 JA3 或交给外部工具分析。
+        """
         self._raw_bytes = raw_client_hello
         if dtls:
             self._client_hello = dtls_client_hello.DtlsClientHello(
@@ -114,6 +131,10 @@ class ClientHello:
 class ClientHelloData:
     """
     Event data for `tls_clienthello` event hooks.
+
+    中文说明：addon 在 `tls_clienthello` 钩子里会拿到这个对象，可以读取
+    ClientHello，也可以设置 `ignore_connection` 或 `establish_server_tls_first`
+    来影响接下来的 TLS 处理策略。
     """
 
     context: context.Context
@@ -135,6 +156,9 @@ class ClientHelloData:
 class TlsData:
     """
     Event data for `tls_start_client`, `tls_start_server`, and `tls_handshake` event hooks.
+
+    中文说明：该对象把连接元数据、代理上下文和 pyOpenSSL 连接对象放在一起，
+    供 TLS 事件钩子调整握手参数、证书或 TLS 行为。
     """
 
     conn: connection.Connection

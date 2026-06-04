@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.clientplayback` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+客户端重放 addon：把已有 HTTP flow 的请求重新发送到服务器。
+
+触发点：
+- `running`：mitmproxy 启动完成后创建后台重放队列消费者。
+- `configure`：`client_replay` 变化时从文件读取 flow 并入队。
+- `replay.client*` 命令：查询、停止、添加或从文件加载重放任务。
+- 内部 `ReplayHandler.handle_hook`：重放过程中继续触发正常 HTTP 生命周期 hook。
 """
 
 from __future__ import annotations
@@ -42,21 +48,25 @@ class MockServer(layers.http.HttpConnection):
     A mock HTTP "server" that just pretends it received a full HTTP request,
     which is then processed by the proxy core.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：它不连接真实客户端，而是把待重放 flow 的请求伪装成代理核心收到
+    的完整 HTTP 请求，让后续代理层按普通请求处理。
     """
 
     flow: http.HTTPFlow
 
     def __init__(self, flow: http.HTTPFlow, context: Context):
         """
-        初始化对象状态。
+        初始化伪造的 HTTP 服务端层，保存待注入的请求 flow。
         """
         super().__init__(context, context.client)
         self.flow = flow
 
     def _handle_event(self, event: events.Event) -> CommandGenerator[None]:
         """
-        `clientplayback` addon 的内部辅助方法。
+        代理层事件入口。
+
+        收到 `Start` 时把保存的请求头、请求体和 trailers 注入 HTTP 层；收到
+        响应相关事件时忽略，因为重放只关心请求被重新发出。
         """
         if isinstance(event, events.Start):
             content = self.flow.request.raw_content
@@ -96,13 +106,18 @@ class MockServer(layers.http.HttpConnection):
 
 class ReplayHandler(server.ConnectionHandler):
     """
-    用于执行客户端重放请求的连接处理器。
+    用于执行单条客户端重放请求的连接处理器。
+
+    它构造一套临时 Context/Layer，让重放请求像真实客户端连接一样走代理核心。
     """
     layer: layers.HttpLayer
 
     def __init__(self, flow: http.HTTPFlow, options: Options) -> None:
         """
-        初始化对象状态。
+        初始化重放连接上下文。
+
+        根据原请求 scheme 设置上游 TLS/SNI，并按当前 upstream 模式决定 HTTP 层
+        工作模式。
         """
         client = flow.client_conn.copy()
         client.state = ConnectionState.OPEN
@@ -129,7 +144,7 @@ class ReplayHandler(server.ConnectionHandler):
 
     async def replay(self) -> None:
         """
-        `clientplayback` addon 中的方法，用于处理 `replay` 相关逻辑。
+        启动一次重放并等待响应或错误 hook 表示完成。
         """
         await self.server_event(events.Start())
         await self.done.wait()
@@ -150,7 +165,10 @@ class ReplayHandler(server.ConnectionHandler):
 
     async def handle_hook(self, hook: commands.StartHook) -> None:
         """
-        `clientplayback` addon 中的方法，用于处理 `handle hook` 相关逻辑。
+        处理重放过程中产生的生命周期 hook。
+
+        这里仍交给 addon manager 分发，因此脚本和内置 addon 会看到一次正常的
+        HTTP 请求/响应流程；响应或错误 hook 到达后关闭连接并标记本次重放完成。
         """
         (data,) = hook.args()
         await ctx.master.addons.handle_lifecycle(hook)
@@ -190,7 +208,7 @@ class ClientPlayback:
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发，创建后台重放消费者任务。
         """
         self.options = ctx.options
         self.playback_task = asyncio_utils.create_task(
@@ -201,7 +219,7 @@ class ClientPlayback:
 
     async def done(self):
         """
-        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        `done` 事件：mitmproxy 关闭时触发，取消后台重放任务。
         """
         if self.playback_task:
             self.playback_task.cancel()
@@ -212,7 +230,7 @@ class ClientPlayback:
 
     async def playback(self):
         """
-        `clientplayback` addon 中的方法，用于处理 `playback` 相关逻辑。
+        后台队列消费者：逐条或无限并发执行重放请求。
         """
         while True:
             self.inflight = await self.queue.get()
@@ -256,7 +274,7 @@ class ClientPlayback:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册客户端重放文件和并发选项。
         """
         loader.add_option(
             "client_replay",
@@ -273,7 +291,9 @@ class ClientPlayback:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        `client_replay` 会在配置阶段读取 dump 文件并把可重放 flow 加入队列。
         """
         if "client_replay" in updated and ctx.options.client_replay:
             try:
@@ -293,7 +313,8 @@ class ClientPlayback:
         """
         Approximate number of flows queued for replay.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.client.count`，返回队列长度加正在执行的
+        一条 flow。
         """
         return self.queue.qsize() + int(bool(self.inflight))
 
@@ -302,7 +323,8 @@ class ClientPlayback:
         """
         Clear the replay queue.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.client.stop`。清空等待队列，并把未执行
+        flow 恢复到重放前状态。
         """
         updated = []
         while True:
@@ -323,7 +345,8 @@ class ClientPlayback:
         """
         Add flows to the replay queue, skipping flows that can't be replayed.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.client`。将选中 HTTP flow 备份、标记为
+        request replay、清空旧 response/error 后加入后台队列。
         """
         updated: list[http.HTTPFlow] = []
         for f in flows:
@@ -348,7 +371,8 @@ class ClientPlayback:
         """
         Load flows from file, and add them to the replay queue.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.client.file`，从 dump 文件读取 flow 后
+        复用 `start_replay()` 入队。
         """
         try:
             flows = io.read_flows_from_paths([path])

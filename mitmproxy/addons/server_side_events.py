@@ -1,5 +1,8 @@
 """
-`mitmproxy.addons.server_side_events` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+检测 Server-Sent Events 响应并提示当前限制的内置 addon。
+
+触发点：
+- `response`：HTTP 响应体读取完成、返回客户端前触发；如果是 SSE 且未开启流式响应则警告。
 """
 
 import logging
@@ -14,12 +17,15 @@ class ServerSideEvents:
 
     Until this bug is fixed, this addon warns the user about this.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：当前非流式 SSE 会被完整缓冲，破坏事件流语义。本 addon 不修改
+    flow，只在检测到风险时提醒用户开启 response streaming。
     """
 
     def response(self, flow: http.HTTPFlow):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应体读取完成、返回客户端前触发。
+
+        检查 `Content-Type: text/event-stream`，并在响应未流式处理时记录警告。
         """
         assert flow.response
         is_sse = flow.response.headers.get("content-type", "").startswith(

@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.stickycookie` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按过滤条件保存并复用 Cookie 的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `stickycookie` 选项。
+- `configure`：过滤表达式变化时重新解析。
+- `response`：HTTP 响应返回时收集 Set-Cookie。
+- `request`：HTTP 请求发往上游前，把已保存且匹配域名/端口/路径的 Cookie 写回请求。
 """
 
 import collections
@@ -19,7 +25,8 @@ def ckey(attrs: dict[str, str], f: http.HTTPFlow) -> TOrigin:
     """
     Returns a (domain, port, path) tuple.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：根据响应中的 Cookie 属性和当前请求，计算 cookie jar 的键。
+    Domain/Path 属性会覆盖默认的请求 host 和根路径。
     """
     domain = f.request.host
     path = "/"
@@ -43,11 +50,12 @@ def domain_match(a: str, b: str) -> bool:
 
 class StickyCookie:
     """
-    `stickycookie` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    在响应阶段记录 Cookie，并在后续匹配请求中自动附加。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化 cookie jar 和可选的 flow filter。
         """
         self.jar: collections.defaultdict[TOrigin, dict[str, str]] = (
             collections.defaultdict(dict)
@@ -56,7 +64,7 @@ class StickyCookie:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `stickycookie` 过滤表达式。
         """
         loader.add_option(
             "stickycookie",
@@ -67,7 +75,9 @@ class StickyCookie:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        `stickycookie` 是 flow filter 字符串，解析失败会拒绝本次配置更新。
         """
         if "stickycookie" in updated:
             if ctx.options.stickycookie:
@@ -80,7 +90,9 @@ class StickyCookie:
 
     def response(self, flow: http.HTTPFlow):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应体读取完成、返回客户端前触发。
+
+        这里读取响应 Cookie：未过期则写入 jar，已过期则从 jar 中移除。
         """
         assert flow.response
         if self.flt:
@@ -103,7 +115,10 @@ class StickyCookie:
 
     def request(self, flow: http.HTTPFlow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求体读取完成、发往上游前触发。
+
+        当请求匹配过滤器时，从 jar 中挑选 domain/port/path 都适用的 Cookie，
+        并写入请求头。
         """
         if self.flt:
             cookie_list: list[tuple[str, str]] = []

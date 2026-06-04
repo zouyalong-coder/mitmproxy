@@ -1,3 +1,11 @@
+"""
+支持重复键的字典结构。
+
+HTTP 头、Cookie、查询参数等协议数据经常允许同一个键出现多次。普通 dict 会
+丢失顺序和重复项，而 MultiDict 在保留原始 `(key, value)` 列表的同时，又提供
+接近字典的访问接口。
+"""
+
 from abc import ABCMeta
 from abc import abstractmethod
 from collections.abc import Iterator
@@ -14,6 +22,9 @@ VT = TypeVar("VT")
 class _MultiDict(MutableMapping[KT, VT], metaclass=ABCMeta):
     """
     A MultiDict is a dictionary-like data structure that supports multiple values per key.
+
+    中文说明：这是抽象基类，负责增删查改和顺序维护；子类只需要定义“键如何
+    归一化”和“多个值如何折叠成单个值”。
     """
 
     fields: tuple[tuple[KT, VT], ...]
@@ -33,6 +44,9 @@ class _MultiDict(MutableMapping[KT, VT], metaclass=ABCMeta):
         reduces all values for "foo" to a single value that is returned.
         For example, HTTP headers are folded, whereas we will just take
         the first cookie we found with that name.
+
+        中文说明：`get_all()` 始终返回完整列表；只有 `dict[key]` 这种单值访问
+        才会调用本方法。不同协议可以在这里实现自己的折叠规则。
         """
 
     @staticmethod
@@ -41,6 +55,9 @@ class _MultiDict(MutableMapping[KT, VT], metaclass=ABCMeta):
         """
         This method converts a key to its canonical representation.
         For example, HTTP headers are case-insensitive, so this method returns key.lower().
+
+        中文说明：所有比较都走这个归一化函数，因此可以支持 HTTP 头大小写不
+        敏感、普通参数大小写敏感等不同语义。
         """
 
     def __getitem__(self, key: KT) -> VT:
@@ -146,7 +163,11 @@ class _MultiDict(MutableMapping[KT, VT], metaclass=ABCMeta):
 
 
 class MultiDict(_MultiDict[KT, VT], serializable.Serializable):
-    """A concrete MultiDict, storing its own data."""
+    """
+    A concrete MultiDict, storing its own data.
+
+    中文说明：这是拥有自身 `fields` 状态的通用实现，适合直接序列化和复制。
+    """
 
     def __init__(self, fields=()):
         super().__init__()
@@ -176,6 +197,9 @@ class MultiDictView(_MultiDict[KT, VT]):
     The MultiDictView provides the MultiDict interface over calculated data.
     The view itself contains no state - data is retrieved from the parent on
     request, and stored back to the parent on change.
+
+    中文说明：这是父对象字段的视图，不自己保存数据。读取时调用 getter，
+    写入时调用 setter，因此可用于把派生属性包装成 MultiDict 接口。
     """
 
     def __init__(self, getter, setter):

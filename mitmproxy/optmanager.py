@@ -1,3 +1,11 @@
+"""
+mitmproxy 运行时选项的注册、读取、更新和回滚机制。
+
+Options 对象基于 `OptManager` 构建。每个选项由 `_Option` 保存类型、默认值、
+当前值、帮助文本和可选取值；更新选项时会发送 changed 信号，如果订阅者抛出
+`OptionsError`，修改会回滚并通知 errored 信号。
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -28,6 +36,14 @@ unset = object()
 
 
 class _Option:
+    """
+    单个选项的内部表示。
+
+    这里保存的是选项元数据和“是否偏离默认值”的运行时状态。`current()` 和
+    `default` 都返回深拷贝，避免调用方修改 list/dict 这类可变值时绕过
+    OptManager 的通知机制。
+    """
+
     __slots__ = ("name", "typespec", "value", "_default", "choices", "help")
 
     def __init__(
@@ -85,6 +101,13 @@ class _Option:
 
 @dataclass
 class _UnconvertedStrings:
+    """
+    YAML/CLI 载入阶段尚未完成类型转换的字符串集合。
+
+    选项系统会先收集原始字符串，再根据对应选项的 typespec 统一转换，便于
+    给出一致的错误信息。
+    """
+
     val: list[str]
 
 
@@ -107,6 +130,10 @@ class OptManager:
 
     Optmanager always returns a deep copy of options to ensure that
     mutation doesn't change the option state inadvertently.
+
+    中文说明：OptManager 是选项的“事务边界”。外部通过属性访问选项值，通过
+    `update()` 或赋值修改选项；修改期间如果订阅者验证失败，会自动恢复旧的
+    `_options` 字典，保证选项集不会处在半更新状态。
     """
 
     def __init__(self) -> None:
@@ -132,6 +159,12 @@ class OptManager:
 
     @contextlib.contextmanager
     def rollback(self, updated, reraise=False):
+        """
+        为一组选项更新提供回滚保护。
+
+        进入上下文前深拷贝所有选项；如果内部抛出 `OptionsError`，会通知错误
+        订阅者、恢复旧状态，并重新发送 changed 信号让观察者刷新。
+        """
         old = copy.deepcopy(self._options)
         try:
             yield

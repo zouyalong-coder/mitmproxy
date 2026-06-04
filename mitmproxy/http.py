@@ -1,3 +1,12 @@
+"""
+HTTP 流量对象与报文工具。
+
+本模块是 mitmproxy 脚本 API 中最常接触的 HTTP 数据模型层，负责描述
+请求、响应、头字段、Cookie、编码内容以及 `HTTPFlow` 的序列化状态。
+阅读时可以先从 `HTTPFlow` 看一条完整 HTTP 交互，再回到 `Request`、
+`Response` 和 `Headers` 理解各个报文部件。
+"""
+
 import binascii
 import json
 import os

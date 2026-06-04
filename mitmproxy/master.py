@@ -145,6 +145,8 @@ class Master:
     async def running(self) -> None:
         """
         触发 mitmproxy 已完成启动的生命周期 hook。
+
+        触发 running 事件, 所有 addons 上的 running 会开始工作，会发起更多任务
         """
         await self.addons.trigger_event(hooks.RunningHook())
 
@@ -152,6 +154,7 @@ class Master:
         """
         触发关闭生命周期 hook，并清理 Master 自己安装的日志组件。
         """
+        # 触发所有 addons 的 done 方法，回收资源
         await self.addons.trigger_event(hooks.DoneHook())
         self._legacy_log_events.uninstall()
         if self._termlog_addon is not None:

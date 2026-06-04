@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.serverplayback` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+服务端回放 addon：用历史响应匹配当前请求，避免访问真实上游。
+
+触发点：
+- `load`：注册 server replay 相关选项。
+- `configure`：从配置文件加载回放 flow，或在匹配规则变化时重建哈希表。
+- `replay.server*` 命令：加载、追加、停止或统计回放响应。
+- `request`：HTTP 请求发往上游前触发，命中历史响应时直接设置 `flow.response`。
 """
 
 import hashlib
@@ -32,21 +38,24 @@ HASH_OPTIONS = [
 
 class ServerPlayback:
     """
-    实现 `serverplayback` addon 的回放控制逻辑。
+    实现服务端响应回放的匹配和短路响应逻辑。
+
+    与 client replay 不同，它不会重新发送请求，而是在当前请求命中历史记录时
+    复制历史响应并直接返回给客户端。
     """
     flowmap: dict[Hashable, list[http.HTTPFlow]]
     configured: bool
 
     def __init__(self):
         """
-        初始化对象状态。
+        初始化请求哈希到候选历史 flow 的映射。
         """
         self.flowmap = {}
         self.configured = False
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册服务端回放匹配、复用和额外请求处理选项。
         """
         loader.add_option(
             "server_replay_kill_extra",
@@ -153,7 +162,8 @@ class ServerPlayback:
         """
         Replay server responses from flows.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.server`。清空当前回放库，再载入传入
+        flows 的响应。
         """
         self.flowmap = {}
         self.add_flows(flows)
@@ -163,7 +173,8 @@ class ServerPlayback:
         """
         Add responses from flows to server replay list.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.server.add`。把传入 HTTP flow 按当前
+        哈希规则加入回放库。
         """
         for f in flows:
             if isinstance(f, http.HTTPFlow):
@@ -174,7 +185,7 @@ class ServerPlayback:
     @command.command("replay.server.file")
     def load_file(self, path: mitmproxy.types.Path) -> None:
         """
-        加载外部文件或配置，并转换为 addon 可处理的数据。
+        `replay.server.file` 命令：从 dump 文件读取 flow 并替换当前回放库。
         """
         try:
             flows = io.read_flows_from_paths([path])
@@ -187,7 +198,7 @@ class ServerPlayback:
         """
         Stop server replay.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `replay.server.stop`，清空所有可回放响应。
         """
         self.flowmap = {}
         ctx.master.addons.trigger(hooks.UpdateHook([]))
@@ -195,7 +206,7 @@ class ServerPlayback:
     @command.command("replay.server.count")
     def count(self) -> int:
         """
-        `serverplayback` addon 中的方法，用于处理 `count` 相关逻辑。
+        `replay.server.count` 命令：返回当前回放库中剩余响应数量。
         """
         return sum(len(i) for i in self.flowmap.values())
 
@@ -203,7 +214,9 @@ class ServerPlayback:
         """
         Calculates a loose hash of the flow request.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：根据当前 server_replay_* 选项构造宽松匹配键。可忽略 host、
+        port、query 参数、body 或指定 header，从而控制“当前请求”和“历史请求”
+        怎样才算同一个请求。
         """
         r = flow.request
         _, _, path, _, query, _ = urllib.parse.urlparse(r.url)
@@ -254,7 +267,8 @@ class ServerPlayback:
         Returns the next flow object, or None if no matching flow was
         found.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：按当前请求哈希查找可用历史 flow。默认命中后弹出一条，开启
+        `server_replay_reuse` 时则保留以便重复使用。
         """
         hash = self._hash(flow)
         if hash in self.flowmap:
@@ -278,7 +292,10 @@ class ServerPlayback:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        首次配置 `server_replay` 时加载文件；影响哈希规则的选项变化时重建
+        `flowmap`，确保之后的 request hook 使用新匹配规则。
         """
         if ctx.options.server_replay_kill_extra:
             logger.warning(
@@ -304,14 +321,17 @@ class ServerPlayback:
         Rebuild flowmap if the hashing method has changed during execution,
         see https://github.com/mitmproxy/mitmproxy/issues/4506
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：哈希规则变化后，必须用新规则重新给已加载 flow 分组。
         """
         flows = [flow for lst in self.flowmap.values() for flow in lst]
         self.load_flows(flows)
 
     def request(self, f: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        命中历史响应时复制 response 并设置 `is_replay="response"`；未命中时按
+        `server_replay_extra` 选择转发、kill 或返回指定状态码。
         """
         if self.flowmap:
             rflow = self.next_flow(f)

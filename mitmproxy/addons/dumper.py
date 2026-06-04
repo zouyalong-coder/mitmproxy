@@ -1,5 +1,12 @@
 """
-`mitmproxy.addons.dumper` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+mitmdump/终端模式下把 flow 摘要和内容打印到 stdout 的 addon。
+
+触发点：
+- `load/configure`：注册和解析输出详细程度、默认 content view、过滤器。
+- HTTP：`response`、`error`、`http_connect_error`。
+- WebSocket：`websocket_message`、`websocket_end`。
+- TCP/UDP：`tcp_message`、`udp_message`、`tcp_error`、`udp_error`。
+- DNS：`dns_response`、`dns_error`。
 """
 
 from __future__ import annotations
@@ -54,11 +61,12 @@ CONTENTVIEW_STYLES: dict[str, dict[str, str | bool]] = {
 
 class Dumper:
     """
-    `dumper` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    根据 flow_detail 和 dumper_filter 把不同协议的事件格式化输出。
     """
+
     def __init__(self, outfile: IO[str] | None = None):
         """
-        初始化对象状态。
+        初始化输出目标、过滤器和终端颜色支持。
         """
         self.filter: flowfilter.TFilter | None = None
         self.outfp: IO[str] = outfile or sys.stdout
@@ -66,7 +74,7 @@ class Dumper:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册终端输出相关选项。
         """
         loader.add_option(
             "flow_detail",
@@ -94,7 +102,7 @@ class Dumper:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发，重新解析 dumper_filter。
         """
         if "dumper_filter" in updated:
             if ctx.options.dumper_filter:
@@ -107,7 +115,7 @@ class Dumper:
 
     def style(self, text: str, **style) -> str:
         """
-        `dumper` addon 中的方法，用于处理 `style` 相关逻辑。
+        根据终端能力给文本添加颜色/样式。
         """
         if style and self.out_has_vt_codes:
             text = miniclick.style(text, **style)
@@ -337,28 +345,28 @@ class Dumper:
 
     def response(self, f):
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应返回客户端前触发，输出完整 HTTP flow。
         """
         if self.match(f):
             self.echo_flow(f)
 
     def error(self, f):
         """
-        处理 HTTP flow 的协议或连接错误事件。
+        HTTP `error` 事件：HTTP flow 出错时触发，输出错误信息。
         """
         if self.match(f):
             self.echo_flow(f)
 
     def http_connect_error(self, f):
         """
-        处理 HTTP CONNECT 建隧道失败事件。
+        HTTP `http_connect_error` 事件：CONNECT 建隧道失败时触发。
         """
         if self.match(f):
             self.echo_flow(f)
 
     def websocket_message(self, f: http.HTTPFlow):
         """
-        处理 WebSocket 消息事件。
+        WebSocket `websocket_message` 事件：收到或发送一条 WebSocket 消息时触发。
         """
         assert f.websocket is not None  # satisfy type checker
         if self.match(f):
@@ -375,7 +383,7 @@ class Dumper:
 
     def websocket_end(self, f: http.HTTPFlow):
         """
-        处理 WebSocket 连接结束事件。
+        WebSocket `websocket_end` 事件：WebSocket 连接关闭时触发。
         """
         assert f.websocket is not None  # satisfy type checker
         if self.match(f):
@@ -407,7 +415,7 @@ class Dumper:
 
     def _proto_error(self, f):
         """
-        `dumper` addon 的内部辅助方法。
+        输出 TCP/UDP 协议错误。
         """
         if self.match(f):
             self.echo(
@@ -429,7 +437,7 @@ class Dumper:
 
     def _proto_message(self, f: TCPFlow | UDPFlow) -> None:
         """
-        `dumper` addon 的内部辅助方法。
+        输出 TCP/UDP 最新消息。
         """
         if self.match(f):
             message = f.messages[-1]
@@ -460,13 +468,13 @@ class Dumper:
 
     def tcp_message(self, f):
         """
-        处理 TCP 消息事件。
+        TCP `tcp_message` 事件：TCP flow 收到或发送一个字节片段时触发。
         """
         self._proto_message(f)
 
     def udp_message(self, f):
         """
-        处理 UDP 消息事件。
+        UDP `udp_message` 事件：UDP flow 收到或发送一个数据报时触发。
         """
         self._proto_message(f)
 
@@ -490,7 +498,7 @@ class Dumper:
 
     def dns_response(self, f: dns.DNSFlow):
         """
-        处理 DNS 响应事件。
+        DNS `dns_response` 事件：DNS 响应返回客户端前触发。
         """
         assert f.response
         if self.match(f):
@@ -512,7 +520,7 @@ class Dumper:
 
     def dns_error(self, f: dns.DNSFlow):
         """
-        处理 DNS flow 错误事件。
+        DNS `dns_error` 事件：DNS flow 出错时触发。
         """
         assert f.error
         if self.match(f):

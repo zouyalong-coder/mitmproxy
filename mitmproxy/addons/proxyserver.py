@@ -1,7 +1,16 @@
 """
 This addon is responsible for starting/stopping the proxy server sockets/instances specified by the mode option.
 
-中文说明：本模块属于 mitmproxy 的 addon 系统，负责上方英文说明所描述的功能。
+中文说明：本模块负责真正启动、停止和管理代理监听 socket，以及维护 live
+connection handler。它也是 TCP/UDP/WebSocket 注入命令的入口。
+
+触发点：
+- `load`：注册代理服务器、流式 body、连接策略等选项。
+- `running`：标记代理服务器 addon 已进入运行态。
+- `configure`：mode/server/connect_addr 等选项变化时校验并启动/停止监听实例。
+- `setup_servers`：master 启动阶段调用，用于首次创建监听服务器。
+- `inject.*` 命令：向 live flow 注入 WebSocket/TCP/UDP 消息。
+- `server_connect`：即将连接上游服务器时触发，设置本地出站地址并防止自连。
 """
 
 from __future__ import annotations
@@ -49,7 +58,7 @@ class Servers:
     """
     def __init__(self, manager: ServerManager):
         """
-        初始化对象状态。
+        初始化服务实例表、更新锁和变更信号。
         """
         self.changed = signals.AsyncSignal(lambda: None)
         self._instances: dict[mode_specs.ProxyMode, ServerInstance] = dict()
@@ -59,13 +68,16 @@ class Servers:
     @property
     def is_updating(self) -> bool:
         """
-        `proxyserver` addon 中的方法，用于处理 `is updating` 相关逻辑。
+        返回当前是否正在启动/停止监听实例。
         """
         return self._lock.locked()
 
     async def update(self, modes: Iterable[mode_specs.ProxyMode]) -> bool:
         """
-        `proxyserver` addon 中的方法，用于处理 `update` 相关逻辑。
+        按新的 mode 列表同步监听实例。
+
+        新增 mode 会创建并启动 ServerInstance，移除的 mode 会停止；更新前后都会
+        发送 changed 信号，让 UI 或其他组件刷新监听状态。
         """
         all_ok = True
 
@@ -137,7 +149,8 @@ class Proxyserver(ServerManager):
     """
     This addon runs the actual proxy server.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：它继承 `ServerManager`，既负责监听实例的生命周期，也负责给代理
+    核心提供连接注册、事件注入和上游连接参数。
     """
 
     connections: dict[tuple | str, ProxyConnectionHandler]
@@ -148,7 +161,7 @@ class Proxyserver(ServerManager):
 
     def __init__(self):
         """
-        初始化对象状态。
+        初始化 live connection 表、Servers 管理器和运行态标记。
         """
         self.connections = {}
         self.servers = Servers(self)
@@ -163,7 +176,7 @@ class Proxyserver(ServerManager):
     @command.command("proxyserver.active_connections")
     def active_connections(self) -> int:
         """
-        `proxyserver` addon 中的方法，用于处理 `active connections` 相关逻辑。
+        `proxyserver.active_connections` 命令：返回当前 live connection handler 数。
         """
         return len(self.connections)
 
@@ -172,7 +185,10 @@ class Proxyserver(ServerManager):
         self, connection_id: tuple | str, handler: ProxyConnectionHandler
     ):
         """
-        `proxyserver` addon 中的方法，用于处理 `register connection` 相关逻辑。
+        连接处理器注册上下文。
+
+        代理核心在连接开始时登记 handler，连接结束时自动移除，供注入命令查找
+        live 连接。
         """
         self.connections[connection_id] = handler
         try:
@@ -182,7 +198,7 @@ class Proxyserver(ServerManager):
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册代理服务器和 HTTP 传输相关选项。
         """
         loader.add_option(
             "store_streamed_bodies",
@@ -264,13 +280,16 @@ class Proxyserver(ServerManager):
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发，允许后续 configure 动态更新监听实例。
         """
         self.is_running = True
 
     def configure(self, updated) -> None:
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        校验 body 大小配置、出站本地地址、代理 mode 语法和监听地址冲突；运行态
+        下 mode/server 改变会异步更新实际监听服务器。
         """
         if "stream_large_bodies" in updated:
             try:
@@ -353,7 +372,8 @@ class Proxyserver(ServerManager):
         """
         Setup proxy servers. This may take an indefinite amount of time to complete (e.g. on permission prompts).
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：master 启动代理时调用。某些平台可能需要权限提示，因此这是
+        async 方法并可能等待较久。
         """
         return await self.servers.update(
             [mode_specs.ProxyMode.parse(m) for m in ctx.options.mode]
@@ -361,7 +381,7 @@ class Proxyserver(ServerManager):
 
     def listen_addrs(self) -> list[Address]:
         """
-        `proxyserver` addon 中的方法，用于处理 `listen addrs` 相关逻辑。
+        返回当前所有监听实例的地址列表。
         """
         return [addr for server in self.servers for addr in server.listen_addrs]
 
@@ -393,7 +413,7 @@ class Proxyserver(ServerManager):
         self, flow: Flow, to_client: bool, message: bytes, is_text: bool = True
     ):
         """
-        向已有连接或 flow 注入用户构造的协议事件。
+        `inject.websocket` 命令：向 live WebSocket flow 注入一条消息。
         """
         if not isinstance(flow, http.HTTPFlow) or not flow.websocket:
             logger.warning("Cannot inject WebSocket messages into non-WebSocket flows.")
@@ -411,7 +431,7 @@ class Proxyserver(ServerManager):
     @command.command("inject.tcp")
     def inject_tcp(self, flow: Flow, to_client: bool, message: bytes):
         """
-        向已有连接或 flow 注入用户构造的协议事件。
+        `inject.tcp` 命令：向 live TCP flow 注入一段字节。
         """
         if not isinstance(flow, tcp.TCPFlow):
             logger.warning("Cannot inject TCP messages into non-TCP flows.")
@@ -426,7 +446,7 @@ class Proxyserver(ServerManager):
     @command.command("inject.udp")
     def inject_udp(self, flow: Flow, to_client: bool, message: bytes):
         """
-        向已有连接或 flow 注入用户构造的协议事件。
+        `inject.udp` 命令：向 live UDP flow 注入一个数据报。
         """
         if not isinstance(flow, udp.UDPFlow):
             logger.warning("Cannot inject UDP messages into non-UDP flows.")
@@ -440,7 +460,9 @@ class Proxyserver(ServerManager):
 
     def server_connect(self, data: server_hooks.ServerConnectionHookData):
         """
-        处理即将连接上游服务器的事件。
+        `server_connect` 事件：代理即将建立上游连接时触发。
+
+        这里设置可选的本地出站地址，并阻止 mitmproxy 递归连接到自身监听端口。
         """
         if data.server.sockname is None:
             data.server.sockname = self._connect_addr

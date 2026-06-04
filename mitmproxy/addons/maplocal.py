@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.maplocal` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按规则用本地文件响应远程请求的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `map_local` 选项。
+- `configure`：`map_local` 变化时解析规则并校验本地路径。
+- `request`：每个 HTTP 请求发往上游前触发，命中本地文件时直接生成响应。
 """
 
 import logging
@@ -22,7 +27,10 @@ from mitmproxy.utils.spec import parse_spec
 
 class MapLocalSpec(NamedTuple):
     """
-    表示 map-local 的匹配规则和本地文件系统目标。
+    表示 map-local 的单条规则。
+
+    `matches` 判断 flow 是否适用，`regex` 从 URL 中截取路径后缀，
+    `local_path` 指向本地文件或目录。
     """
     matches: flowfilter.TFilter
     regex: str
@@ -49,12 +57,15 @@ def parse_map_local_spec(option: str) -> MapLocalSpec:
 
 
 def _safe_path_join(root: Path, untrusted: str) -> Path:
-    """Join a Path element with an untrusted str.
+    """
+    Join a Path element with an untrusted str.
 
     This is a convenience wrapper for werkzeug's safe_join,
     raising a ValueError if the path is malformed.
-    raising a ValueError if the path is malformed.中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
-    raising a ValueError if the path is malformed."""
+
+    中文说明：把 URL 派生出的不可信路径拼到本地根目录下，并防止 `../`
+    逃逸到映射目录之外。
+    """
     untrusted_parts = Path(untrusted).parts
     joined = safe_join(root.as_posix(), *untrusted_parts)
     if joined is None:
@@ -67,7 +78,8 @@ def file_candidates(url: str, spec: MapLocalSpec) -> list[Path]:
     Get all potential file candidates given a URL and a mapping spec ordered by preference.
     This function already assumes that the spec regex matches the URL.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：根据 URL 和规则生成候选文件列表。目录映射会优先尝试解码后的
+    路径和 `index.html`，必要时再尝试转义后的安全文件名。
     """
     m = re.search(spec.regex, url)
     assert m
@@ -95,17 +107,18 @@ def file_candidates(url: str, spec: MapLocalSpec) -> list[Path]:
 
 class MapLocal:
     """
-    `maplocal` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    维护本地映射规则，并在请求阶段用文件内容短路上游访问。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化已解析的本地映射规则列表。
         """
         self.replacements: list[MapLocalSpec] = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `map_local` 配置项。
         """
         loader.add_option(
             "map_local",
@@ -120,7 +133,9 @@ class MapLocal:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        当 `map_local` 更新时重新解析规则，并在配置阶段确认本地路径存在。
         """
         if "map_local" in updated:
             self.replacements = []
@@ -136,7 +151,10 @@ class MapLocal:
 
     def request(self, flow: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        命中本地文件后直接设置 `flow.response`，后续代理层不会再把请求发送到
+        远程服务器；若规则命中但候选文件都不存在，则返回 404。
         """
         if flow.response or flow.error or not flow.live:
             return

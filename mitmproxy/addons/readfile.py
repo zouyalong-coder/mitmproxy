@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.readfile` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+启动后从 dump 文件读取 flow 的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `rfile` 和 `readfile_filter`。
+- `configure`：过滤表达式变化时重新解析。
+- `running`：mitmproxy 完成启动后触发，按 `rfile` 创建异步读取任务。
+- `readfile.reading` 命令：查询当前是否仍在读取。
 """
 
 import asyncio
@@ -23,19 +29,20 @@ class ReadFile:
     """
     An addon that handles reading from file on startup.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：读取 mitmproxy dump 文件并把其中的 flow 交给 master 注入到当前
+    会话中，常用于启动时预加载历史流量。
     """
 
     def __init__(self):
         """
-        初始化对象状态。
+        初始化可选过滤器和后台读取任务引用。
         """
         self.filter = None
         self._read_task: asyncio.Task | None = None
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册读取文件路径和读取过滤器。
         """
         loader.add_option("rfile", Optional[str], None, "Read flows from file.")
         loader.add_option(
@@ -44,7 +51,9 @@ class ReadFile:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        `readfile_filter` 是 flow filter 字符串，解析失败会拒绝本次配置更新。
         """
         if "readfile_filter" in updated:
             if ctx.options.readfile_filter:
@@ -57,7 +66,7 @@ class ReadFile:
 
     async def load_flows(self, fo: BinaryIO) -> int:
         """
-        加载外部文件或配置，并转换为 addon 可处理的数据。
+        从二进制文件对象读取 flow 并逐条交给 master。
         """
         cnt = 0
         freader = io.FlowReader(fo)
@@ -78,7 +87,7 @@ class ReadFile:
 
     async def load_flows_from_path(self, path: str) -> int:
         """
-        加载外部文件或配置，并转换为 addon 可处理的数据。
+        展开路径并从 dump 文件读取 flow。
         """
         path = os.path.expanduser(path)
         try:
@@ -90,7 +99,7 @@ class ReadFile:
 
     async def doread(self, rfile: str) -> None:
         """
-        `readfile` addon 中的方法，用于处理 `doread` 相关逻辑。
+        后台读取任务入口，捕获并记录读取失败。
         """
         try:
             await self.load_flows_from_path(rfile)
@@ -99,7 +108,9 @@ class ReadFile:
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 完成启动后触发。
+
+        如果配置了 `rfile`，就在事件循环中创建读取任务，避免阻塞启动流程。
         """
         if ctx.options.rfile:
             self._read_task = asyncio_utils.create_task(
@@ -111,7 +122,7 @@ class ReadFile:
     @command.command("readfile.reading")
     def reading(self) -> bool:
         """
-        `readfile` addon 中的方法，用于处理 `reading` 相关逻辑。
+        `readfile.reading` 命令：返回后台读取任务是否仍在运行。
         """
         return bool(self._read_task and not self._read_task.done())
 
@@ -120,12 +131,12 @@ class ReadFileStdin(ReadFile):
     """
     Support the special case of "-" for reading from stdin
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：扩展 `ReadFile`，让 `rfile=-` 时可以从标准输入读取 dump 数据。
     """
 
     async def load_flows_from_path(self, path: str) -> int:
         """
-        加载外部文件或配置，并转换为 addon 可处理的数据。
+        从路径或标准输入读取 flow；`-` 表示 stdin。
         """
         if path == "-":  # pragma: no cover
             # Need to think about how to test this. This function is scheduled

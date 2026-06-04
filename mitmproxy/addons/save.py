@@ -1,5 +1,13 @@
 """
-`mitmproxy.addons.save` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+把 flow 保存为 mitmproxy dump 文件的内置 addon。
+
+触发点：
+- `load/configure`：注册并应用 `save_stream_file`、`save_stream_filter`。
+- `save.file` 命令：用户显式保存选中的 flows。
+- HTTP：`request` 记录活跃 flow，`response/error/websocket_end` 写入文件。
+- TCP/UDP：`*_start` 记录活跃 flow，`*_end/*_error` 写入文件。
+- DNS：`dns_request` 记录活跃 flow，`dns_response/dns_error` 写入文件。
+- `done`：mitmproxy 关闭时写出仍活跃的流并关闭文件。
 """
 
 import logging
@@ -31,7 +39,8 @@ def _path(path: str) -> str:
     """
     Extract the path from a path spec (which may have an extra "+" at the front)
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：去掉路径前缀 `+` 并展开用户目录；`+` 只表示追加模式，不属于
+    真实文件路径。
     """
     if path.startswith("+"):
         path = path[1:]
@@ -43,7 +52,7 @@ def _mode(path: str) -> Literal["ab", "wb"]:
     """
     Extract the writing mode (overwrite or append) from a path spec
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：路径以 `+` 开头表示追加到已有 dump 文件，否则覆盖写入。
     """
     if path.startswith("+"):
         return "ab"
@@ -53,11 +62,12 @@ def _mode(path: str) -> Literal["ab", "wb"]:
 
 class Save:
     """
-    `save` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    管理流式保存文件、过滤器和仍未结束的活跃 flow 集合。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化输出流、过滤器和活跃 flow 集合。
         """
         self.stream: io.FilteredFlowWriter | None = None
         self.filt: flowfilter.TFilter | None = None
@@ -66,7 +76,7 @@ class Save:
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册流式保存相关选项。
         """
         loader.add_option(
             "save_stream_file",
@@ -88,7 +98,10 @@ class Save:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        更新过滤器或输出文件；如果路径使用 strftime 模板，会在写入前按当前
+        时间决定是否轮换到新文件。
         """
         if "save_stream_filter" in updated:
             if ctx.options.save_stream_filter:
@@ -111,7 +124,7 @@ class Save:
 
     def maybe_rotate_to_new_file(self) -> None:
         """
-        `save` addon 中的方法，用于处理 `maybe rotate to new file` 相关逻辑。
+        根据 `save_stream_file` 的 strftime 模板决定是否切换输出文件。
         """
         path = datetime.today().strftime(_path(ctx.options.save_stream_file))
         if self.current_path == path:
@@ -132,7 +145,8 @@ class Save:
         """
         Write the flow to the stream, but first check if we need to rotate to a new file.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：所有协议的结束/错误事件最终都会走到这里。写入前会检查是否
+        需要轮换文件，写入成功后从 `active_flows` 移除。
         """
         if not self.stream:
             return
@@ -167,7 +181,7 @@ class Save:
         Save flows to a file. If the path starts with a +, flows are
         appended to the file, otherwise it is over-written.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `save.file`，用于一次性保存用户选中的 flows。
         """
         try:
             with open(_path(path), _mode(path)) as f:
@@ -186,51 +200,51 @@ class Save:
 
     def tcp_start(self, flow: tcp.TCPFlow):
         """
-        处理 TCP flow 开始事件。
+        TCP `tcp_start` 事件：TCP flow 创建时触发，先加入活跃集合。
         """
         if self.stream:
             self.active_flows.add(flow)
 
     def tcp_end(self, flow: tcp.TCPFlow):
         """
-        处理 TCP flow 正常结束事件。
+        TCP `tcp_end` 事件：TCP flow 正常结束时触发，写入 dump。
         """
         self.save_flow(flow)
 
     def tcp_error(self, flow: tcp.TCPFlow):
         """
-        处理 TCP flow 错误事件。
+        TCP `tcp_error` 事件：TCP flow 出错时触发，按结束流程写入 dump。
         """
         self.tcp_end(flow)
 
     def udp_start(self, flow: udp.UDPFlow):
         """
-        处理 UDP flow 开始事件。
+        UDP `udp_start` 事件：UDP flow 创建时触发，先加入活跃集合。
         """
         if self.stream:
             self.active_flows.add(flow)
 
     def udp_end(self, flow: udp.UDPFlow):
         """
-        处理 UDP flow 正常结束事件。
+        UDP `udp_end` 事件：UDP flow 正常结束时触发，写入 dump。
         """
         self.save_flow(flow)
 
     def udp_error(self, flow: udp.UDPFlow):
         """
-        处理 UDP flow 错误事件。
+        UDP `udp_error` 事件：UDP flow 出错时触发，按结束流程写入 dump。
         """
         self.udp_end(flow)
 
     def websocket_end(self, flow: http.HTTPFlow):
         """
-        处理 WebSocket 连接结束事件。
+        WebSocket `websocket_end` 事件：升级后的 WebSocket 连接结束时触发。
         """
         self.save_flow(flow)
 
     def request(self, flow: http.HTTPFlow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发，先加入活跃集合。
         """
         if self.stream:
             self.active_flows.add(flow)
@@ -239,32 +253,35 @@ class Save:
         # websocket flows will receive a websocket_end,
         # we don't want to persist them here already
         """
-        处理 HTTP 响应生命周期事件，可读取或修改 response flow。
+        HTTP `response` 事件：响应返回客户端前触发。
+
+        普通 HTTP flow 在这里写入；WebSocket flow 等 `websocket_end`，避免过早
+        保存尚未完成的消息列表。
         """
         if flow.websocket is None:
             self.save_flow(flow)
 
     def error(self, flow: http.HTTPFlow):
         """
-        处理 HTTP flow 的协议或连接错误事件。
+        HTTP `error` 事件：HTTP flow 发生连接或协议错误时触发，按响应流程写入。
         """
         self.response(flow)
 
     def dns_request(self, flow: dns.DNSFlow):
         """
-        处理 DNS 请求事件。
+        DNS `dns_request` 事件：DNS 请求进入代理时触发，先加入活跃集合。
         """
         if self.stream:
             self.active_flows.add(flow)
 
     def dns_response(self, flow: dns.DNSFlow):
         """
-        处理 DNS 响应事件。
+        DNS `dns_response` 事件：DNS 响应返回客户端前触发，写入 dump。
         """
         self.save_flow(flow)
 
     def dns_error(self, flow: dns.DNSFlow):
         """
-        处理 DNS flow 错误事件。
+        DNS `dns_error` 事件：DNS flow 出错时触发，写入 dump。
         """
         self.save_flow(flow)

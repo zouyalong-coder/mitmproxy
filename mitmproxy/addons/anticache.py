@@ -1,5 +1,9 @@
 """
-`mitmproxy.addons.anticache` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+去除客户端缓存验证头的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `anticache` 选项。
+- `request`：每个 HTTP 请求进入代理处理链时触发，按需删除会导致 304 的请求头。
 """
 
 from mitmproxy import ctx
@@ -7,11 +11,12 @@ from mitmproxy import ctx
 
 class AntiCache:
     """
-    `anticache` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    负责让上游服务器尽量返回完整响应，而不是 304 Not Modified。
     """
+
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `anticache` 开关。
         """
         loader.add_option(
             "anticache",
@@ -25,7 +30,10 @@ class AntiCache:
 
     def request(self, flow):
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求头已解析完成、发往上游前触发。
+
+        开启后调用 `flow.request.anticache()` 删除 If-None-Match、
+        If-Modified-Since 等缓存验证头。
         """
         if ctx.options.anticache:
             flow.request.anticache()

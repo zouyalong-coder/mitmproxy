@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.script` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+加载、热重载并运行用户 addon 脚本的内置 addon。
+
+触发点：
+- `Script.running/done`：单个脚本 addon 的运行期初始化与收尾。
+- `Script.watcher`：后台轮询脚本文件修改时间并热重载。
+- `ScriptLoader.load/configure/running`：注册 `scripts` 选项并按配置管理脚本列表。
+- `script.run` 命令：对指定 flows 临时运行一个脚本并模拟生命周期事件。
 """
 
 import asyncio
@@ -68,7 +74,8 @@ def script_error_handler(path: str, exc: Exception) -> None:
     """
     Log errors during script loading.
     
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：脚本加载失败时裁剪框架内部 traceback，只保留对用户脚本有帮助的
+    部分并写入日志。
     """
     tback = exc.__traceback__
     tback = addonmanager.cut_traceback(
@@ -87,12 +94,13 @@ class Script:
     """
     An addon that manages a single script.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：每个 `Script` 实例管理一个用户脚本文件，把脚本模块注册为真正
+    的 addon，并在文件变化时重新加载。
     """
 
     def __init__(self, path: str, reload: bool) -> None:
         """
-        初始化对象状态。
+        初始化脚本路径、当前模块命名空间和可选热重载任务。
         """
         self.name = "scriptmanager:" + path
         self.path = path
@@ -115,13 +123,13 @@ class Script:
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发，并标记脚本管理器已进入运行态。
         """
         self.is_running = True
 
     def done(self):
         """
-        在 addon 或 mitmproxy 关闭时释放资源并做收尾处理。
+        `done` 事件：mitmproxy 关闭时触发，取消脚本热重载任务。
         """
         if self.reloadtask:
             self.reloadtask.cancel()
@@ -129,13 +137,16 @@ class Script:
     @property
     def addons(self):
         """
-        `script` addon 中的方法，用于处理 `addons` 相关逻辑。
+        返回当前脚本模块作为子 addon，供 addon manager 分发 hook。
         """
         return [self.ns] if self.ns else []
 
     def loadscript(self):
         """
-        `script` addon 中的方法，用于处理 `loadscript` 相关逻辑。
+        加载或重载脚本文件，并把模块注册到 addon manager。
+
+        重载时会先移除旧模块，再对新模块触发 configure；如果 mitmproxy 已经
+        running，还会补发 running hook。
         """
         logger.info("Loading script %s" % self.path)
         if self.ns:
@@ -160,7 +171,7 @@ class Script:
         # Script loading is terminally confused at the moment.
         # This here is a stopgap workaround to defer loading.
         """
-        `script` addon 中的方法，用于处理 `watcher` 相关逻辑。
+        热重载 watcher：定期检查脚本 mtime，变化后重新加载。
         """
         await asyncio.sleep(0)
         last_mtime = 0.0
@@ -183,25 +194,25 @@ class ScriptLoader:
     """
     An addon that manages loading scripts from options.
     
-    中文说明：该类封装对应 addon 或辅助对象的状态，并负责上方英文说明所描述的处理流程。
+    中文说明：负责根据 `scripts` 选项创建、排序、移除多个 `Script` 子 addon。
     """
 
     def __init__(self):
         """
-        初始化对象状态。
+        初始化脚本列表和运行态标记。
         """
         self.is_running = False
         self.addons = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `scripts` 配置项。
         """
         loader.add_option("scripts", Sequence[str], [], "Execute a script.")
 
     def running(self):
         """
-        在 mitmproxy 完成启动后执行运行期初始化。
+        `running` 事件：mitmproxy 启动完成后触发。
         """
         self.is_running = True
 
@@ -212,7 +223,8 @@ class ScriptLoader:
         the current options and all lifecycle events for each flow are
         simulated. Note that the load event is not invoked.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：命令触发点是 `script.run`。它不会触发脚本的 load 事件，但会
+        对指定 flows 依次模拟 request/response/error 等生命周期事件。
         """
         if not os.path.isfile(path):
             logger.error("No such script: %s" % path)

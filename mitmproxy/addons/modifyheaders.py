@@ -1,5 +1,11 @@
 """
-`mitmproxy.addons.modifyheaders` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按规则增删 HTTP 请求头或响应头的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `modify_headers`。
+- `configure`：`modify_headers` 变化时解析并校验规则。
+- `requestheaders`：请求头解析完成、请求体读取前触发。
+- `responseheaders`：响应头解析完成、响应体读取前触发。
 """
 
 import logging
@@ -19,7 +25,10 @@ from mitmproxy.utils.spec import parse_spec
 
 class ModifySpec(NamedTuple):
     """
-    表示请求/响应修改规则的解析结果。
+    表示一条头部或 body 修改规则。
+
+    `matches` 是 flow filter，`subject` 是待修改的头名或 body 正则，
+    `replacement_str` 是替换值；以 `@` 开头时表示从文件读取替换内容。
     """
     matches: flowfilter.TFilter
     subject: bytes
@@ -33,7 +42,8 @@ class ModifySpec(NamedTuple):
         Raises:
             - IOError if the file cannot be read.
         
-        中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+        中文说明：把配置中的替换值转换为 bytes。如果替换值以 `@` 开头，
+        则把后续内容当作文件路径并读取文件内容。
         """
         if self.replacement_str.startswith("@"):
             return Path(self.replacement_str[1:]).expanduser().read_bytes()
@@ -67,17 +77,18 @@ def parse_modify_spec(option: str, subject_is_regex: bool) -> ModifySpec:
 
 class ModifyHeaders:
     """
-    `modifyheaders` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    维护头部修改规则，并在请求头/响应头阶段应用。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化已解析的头部替换规则列表。
         """
         self.replacements: list[ModifySpec] = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `modify_headers` 配置项。
         """
         loader.add_option(
             "modify_headers",
@@ -92,7 +103,9 @@ class ModifyHeaders:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        规则在这里预解析；如果 `@file` 路径不可读，会拒绝本次配置更新。
         """
         if "modify_headers" in updated:
             self.replacements = []
@@ -107,7 +120,7 @@ class ModifyHeaders:
 
     def requestheaders(self, flow):
         """
-        处理 HTTP 请求头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `requestheaders` 事件：请求头解析完成、请求体读取前触发。
         """
         if flow.response or flow.error or not flow.live:
             return
@@ -115,7 +128,7 @@ class ModifyHeaders:
 
     def responseheaders(self, flow):
         """
-        处理 HTTP 响应头事件，适合在 body 读取前决定流式处理或改写头部。
+        HTTP `responseheaders` 事件：响应头解析完成、响应体读取前触发。
         """
         if flow.error or not flow.live:
             return
@@ -123,7 +136,10 @@ class ModifyHeaders:
 
     def run(self, flow: http.HTTPFlow, hdrs: Headers) -> None:
         """
-        `modifyheaders` addon 中的方法，用于处理 `run` 相关逻辑。
+        对传入的头集合应用所有命中的修改规则。
+
+        先基于“未修改前的 flow”计算哪些规则命中，再删除目标头，最后按规则
+        添加新值。这样可以避免前一条规则的修改影响后一条规则的匹配结果。
         """
         matches = []
 

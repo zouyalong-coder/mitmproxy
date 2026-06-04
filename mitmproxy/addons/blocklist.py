@@ -1,5 +1,10 @@
 """
-`mitmproxy.addons.blocklist` 模块的中文说明：提供对应内置 addon 的注册、命令和 hook 处理逻辑。
+按 flow filter 匹配并阻断 HTTP 请求的内置 addon。
+
+触发点：
+- `load`：addon 加载时注册 `block_list` 选项。
+- `configure`：`block_list` 变化时重新解析规则。
+- `request`：每个 HTTP 请求发往上游前触发，匹配规则后直接返回响应或关闭连接。
 """
 
 from collections.abc import Sequence
@@ -15,7 +20,10 @@ from mitmproxy.net.http.status_codes import NO_RESPONSE
 
 class BlockSpec(NamedTuple):
     """
-    表示 blocklist 中的一条过滤规则和对应状态码。
+    表示 blocklist 中的一条规则。
+
+    `matches` 是已编译的 flow filter，`status_code` 是命中后返回的状态码；
+    特殊状态码 444 表示不发送 HTTP 响应、直接关闭连接。
     """
     matches: flowfilter.TFilter
     status_code: int
@@ -27,7 +35,8 @@ def parse_spec(option: str) -> BlockSpec:
 
         /flow-filter/status
 
-    中文说明：该函数负责上方英文说明所描述的操作，通常作为命令、hook 或内部辅助逻辑被调用。
+    中文说明：把用户配置的单条字符串解析为 `BlockSpec`。分隔符取配置的第
+    一个字符，因此 `/~u example/403` 和 `|~u example|403` 都是合法形式。
     """
     sep, rem = option[0], option[1:]
 
@@ -46,17 +55,18 @@ def parse_spec(option: str) -> BlockSpec:
 
 class BlockList:
     """
-    `blocklist` addon 的主要类或辅助类，封装该功能的状态和处理逻辑。
+    缓存并执行 block_list 规则。
     """
+
     def __init__(self) -> None:
         """
-        初始化对象状态。
+        初始化规则缓存。
         """
         self.items: list[BlockSpec] = []
 
     def load(self, loader):
         """
-        注册该 addon 暴露的配置项、命令或启动期资源。
+        addon 加载事件：注册 `block_list` 规则列表。
         """
         loader.add_option(
             "block_list",
@@ -73,7 +83,10 @@ class BlockList:
 
     def configure(self, updated):
         """
-        在相关配置项变化时重新读取、校验并缓存运行参数。
+        `configure` 事件：选项变化后触发。
+
+        只有 `block_list` 更新时才重新解析，解析失败会抛出 OptionsError，使
+        本次配置变更回滚。
         """
         if "block_list" in updated:
             self.items = []
@@ -88,7 +101,10 @@ class BlockList:
 
     def request(self, flow: http.HTTPFlow) -> None:
         """
-        处理 HTTP 请求生命周期事件，可读取或修改 request flow。
+        HTTP `request` 事件：请求发往上游前触发。
+
+        仅处理仍然 live、尚无 response/error 的请求；命中规则后设置
+        `flow.metadata["blocklisted"]` 方便 UI 或其他 addon 识别。
         """
         if flow.response or flow.error or not flow.live:
             return
