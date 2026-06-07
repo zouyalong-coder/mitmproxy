@@ -1,3 +1,17 @@
+"""
+HTTP/1.x 连接解析与序列化 layer。
+
+本模块把 TCP 字节流解析成 mitmproxy 内部的 `HttpEvent`，也把 `HttpEvent`
+重新组装成 HTTP/1 请求/响应字节。`Http1Server` 面向客户端连接，解析客户端
+请求并发送响应；`Http1Client` 面向服务器连接，发送请求并解析服务器响应。
+
+触发点：
+- `events.Start` 初始化读头状态。
+- `events.DataReceived` 驱动读头/读体解析。
+- `HttpEvent` 从 `HttpStream` 回流时驱动 HTTP/1 序列化发送。
+- CONNECT 或 101 升级成功后，会切入 passthrough 让后续字节透传。
+"""
+
 import abc
 from collections.abc import Callable
 from typing import Union
@@ -39,6 +53,13 @@ TBodyReader = Union[ChunkedReader, Http10Reader, ContentLengthReader]
 
 
 class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
+    """
+    HTTP/1 客户端/服务器解析器的公共基类。
+
+    它维护当前 stream、请求/响应对象、body reader 和接收缓冲区。HTTP/1 没有
+    原生多路复用，所以同一连接上一次只处理一个 stream。
+    """
+
     stream_id: StreamId | None = None
     request: http.Request | None = None
     response: http.Response | None = None
@@ -54,6 +75,7 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
     ReceiveEndOfMessage: type[RequestEndOfMessage | ResponseEndOfMessage]
 
     def __init__(self, context: Context, conn: Connection):
+        """绑定底层连接并初始化 HTTP/1 接收缓冲区。"""
         super().__init__(context, conn)
         self.buf = ReceiveBuffer()
 
@@ -68,6 +90,9 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
         yield from ()  # pragma: no cover
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        HTTP/1 事件入口：内部 HttpEvent 走发送路径，连接事件走当前解析状态。
+        """
         if isinstance(event, HttpEvent):
             yield from self.send(event)
         else:
@@ -80,12 +105,19 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
 
     @expect(events.Start)
     def start(self, _) -> layer.CommandGenerator[None]:
+        """启动后先进入读 HTTP 头状态。"""
         self.state = self.read_headers
         yield from ()
 
     state = start
 
     def read_body(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        根据 Content-Length/chunked/EOF 语义读取 body。
+
+        `body_reader` 由 `make_body_reader()` 按预期长度选择；读到完整 body 时
+        产出 `RequestEndOfMessage` 或 `ResponseEndOfMessage`。
+        """
         assert self.stream_id is not None
         while True:
             try:
@@ -147,9 +179,16 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
             raise AssertionError(f"Unexpected event: {event}")
 
     def done(self, event: events.ConnectionEvent) -> layer.CommandGenerator[None]:
+        """连接已完成/关闭后的空状态。"""
         yield from ()  # pragma: no cover
 
     def make_pipe(self) -> layer.CommandGenerator[None]:
+        """
+        切换为字节透传模式。
+
+        触发点：CONNECT 成功或 101 Switching Protocols 后。缓冲区里已经读到的
+        多余字节会先剥离多余换行，再立即交给 passthrough。
+        """
         self.state = self.passthrough
         if self.buf:
             already_received = self.buf.maybe_extract_at_most(len(self.buf)) or b""
@@ -159,6 +198,7 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
                 yield from self.state(events.DataReceived(self.conn, already_received))
 
     def passthrough(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """把后续连接数据包装成 HTTP Data/EOM 事件交给上层隧道处理。"""
         assert self.stream_id
         if isinstance(event, events.DataReceived):
             yield ReceiveHttp(self.ReceiveData(self.stream_id, event.data))
@@ -171,6 +211,12 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
     def mark_done(
         self, *, request: bool = False, response: bool = False
     ) -> layer.CommandGenerator[None]:
+        """
+        标记请求/响应半边完成，并决定连接是否可复用。
+
+        如果升级/CONNECT 成功则进入 pipe；如果需要 read-until-EOF 或显式关闭，
+        则关闭连接；否则重置状态等待下一个 HTTP/1 请求。
+        """
         if request:
             self.request_done = True
         if response:
@@ -221,7 +267,11 @@ class Http1Connection(HttpConnection, metaclass=abc.ABCMeta):
 
 
 class Http1Server(Http1Connection):
-    """A simple HTTP/1 server with no pipelining support."""
+    """
+    A simple HTTP/1 server with no pipelining support.
+
+    中文说明：面向客户端连接，解析客户端请求并把 `HttpStream` 产生的响应写回客户端。
+    """
 
     ReceiveProtocolError = RequestProtocolError
     ReceiveData = RequestData
@@ -229,10 +279,12 @@ class Http1Server(Http1Connection):
     stream_id: int
 
     def __init__(self, context: Context):
+        """HTTP/1 服务端 stream_id 从 1 开始，后续按奇数递增。"""
         super().__init__(context, context.client)
         self.stream_id = 1
 
     def send(self, event: HttpEvent) -> layer.CommandGenerator[None]:
+        """把响应类 HttpEvent 序列化为 HTTP/1 响应字节。"""
         assert event.stream_id == self.stream_id
         if isinstance(event, ResponseHeaders):
             self.response = response = event.response
@@ -281,6 +333,11 @@ class Http1Server(Http1Connection):
     def read_headers(
         self, event: events.ConnectionEvent
     ) -> layer.CommandGenerator[None]:
+        """
+        从客户端字节流读取请求头。
+
+        成功解析后产出 `RequestHeaders`，并根据预期 body 长度切换到读体状态。
+        """
         if isinstance(event, events.DataReceived):
             request_head = self.buf.maybe_extract_lines()
             if request_head:
@@ -331,22 +388,33 @@ class Http1Server(Http1Connection):
     def mark_done(
         self, *, request: bool = False, response: bool = False
     ) -> layer.CommandGenerator[None]:
+        """请求完成但响应未完成时，先等待当前 flow 结束再解析下一个请求。"""
         yield from super().mark_done(request=request, response=response)
         if self.request_done and not self.response_done:
             self.state = self.wait
 
 
 class Http1Client(Http1Connection):
-    """A simple HTTP/1 client with no pipelining support."""
+    """
+    A simple HTTP/1 client with no pipelining support.
+
+    中文说明：面向上游服务器连接，发送请求并把服务器响应解析成 `HttpEvent`。
+    """
 
     ReceiveProtocolError = ResponseProtocolError
     ReceiveData = ResponseData
     ReceiveEndOfMessage = ResponseEndOfMessage
 
     def __init__(self, context: Context):
+        """绑定当前上下文中的服务器连接。"""
         super().__init__(context, context.server)
 
     def send(self, event: HttpEvent) -> layer.CommandGenerator[None]:
+        """
+        把请求类 HttpEvent 序列化为 HTTP/1 请求字节。
+
+        如果输入来自 HTTP/2/3，会先降级为 HTTP/1.1 语义，例如合并多个 Cookie 头。
+        """
         if isinstance(event, RequestProtocolError):
             yield commands.CloseConnection(self.conn)
             return
@@ -397,6 +465,9 @@ class Http1Client(Http1Connection):
     def read_headers(
         self, event: events.ConnectionEvent
     ) -> layer.CommandGenerator[None]:
+        """
+        从服务器字节流读取响应头，并切换到响应体读取状态。
+        """
         if isinstance(event, events.DataReceived):
             if not self.request:
                 # we just received some data for an unknown request.
@@ -463,6 +534,9 @@ class Http1Client(Http1Connection):
 
 
 def should_make_pipe(request: http.Request, response: http.Response) -> bool:
+    """
+    判断当前 HTTP/1 flow 结束后是否要升级为透传管道。
+    """
     if response.status_code == 101:
         return True
     elif response.status_code == 200 and request.method.upper() == "CONNECT":
@@ -472,6 +546,9 @@ def should_make_pipe(request: http.Request, response: http.Response) -> bool:
 
 
 def make_body_reader(expected_size: int | None) -> TBodyReader:
+    """
+    根据预期 body 大小选择 h11 的 body reader。
+    """
     if expected_size is None:
         return ChunkedReader()
     elif expected_size == -1:
@@ -484,6 +561,9 @@ def make_error_response(
     status_code: int,
     message: str = "",
 ) -> bytes:
+    """
+    构造 mitmproxy 返回给客户端的 HTTP/1 错误响应字节。
+    """
     resp = http.Response.make(
         status_code,
         format_error(status_code, message),

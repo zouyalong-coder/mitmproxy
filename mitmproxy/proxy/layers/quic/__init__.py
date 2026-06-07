@@ -1,3 +1,10 @@
+"""
+QUIC layer 包的公共导出入口。
+
+这里集中导出 QUIC client/server layer、raw QUIC layer、stream 命令/事件和
+TLS hook 数据类型，供 HTTP/3、代理模式 layer 以及 addon hook 机制引用。
+"""
+
 from ._client_hello_parser import quic_parse_client_hello_from_datagrams
 from ._commands import CloseQuicConnection
 from ._commands import ResetQuicStream

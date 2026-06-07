@@ -1,3 +1,10 @@
+"""
+HTTP addon hook 定义。
+
+这些 hook 是用户脚本和内置 addon 看到的 HTTP 生命周期事件。底层 HTTP 事件会
+先经过 `HttpStream` 状态机，随后在合适时机触发这里的 hook。
+"""
+
 from dataclasses import dataclass
 
 from mitmproxy import http
@@ -8,6 +15,9 @@ from mitmproxy.proxy import commands
 class HttpRequestHeadersHook(commands.StartHook):
     """
     HTTP request headers were successfully read. At this point, the body is empty.
+
+    中文说明：对应 addon 里的 `requestheaders(flow)`，请求头解析完成、请求体
+    读取前触发。
     """
 
     name = "requestheaders"
@@ -23,6 +33,9 @@ class HttpRequestHook(commands.StartHook):
     HTTP trailers, if present, have not been transmitted to the server yet and can still be modified.
     Enabling streaming may cause unexpected event sequences: For example, `response` may now occur
     before `request` because the server replied with "413 Payload Too Large" during upload.
+
+    中文说明：对应 `request(flow)`，完整请求读取完成后触发；开启 streaming 时
+    语义会变成“请求体已经流式传完”。
     """
 
     name = "request"
@@ -33,6 +46,8 @@ class HttpRequestHook(commands.StartHook):
 class HttpResponseHeadersHook(commands.StartHook):
     """
     HTTP response headers were successfully read. At this point, the body is empty.
+
+    中文说明：对应 `responseheaders(flow)`，响应头解析完成、响应体读取前触发。
     """
 
     name = "responseheaders"
@@ -46,6 +61,8 @@ class HttpResponseHook(commands.StartHook):
 
     Note: If response streaming is active, this event fires after the entire body has been streamed.
     HTTP trailers, if present, have not been transmitted to the client yet and can still be modified.
+
+    中文说明：对应 `response(flow)`，完整响应读取完成后触发。
     """
 
     name = "response"
@@ -60,6 +77,8 @@ class HttpErrorHook(commands.StartHook):
     error response, which is simply a response with an HTTP error code.
 
     Every flow will receive either an error or an response event, but not both.
+
+    中文说明：对应 `error(flow)`，HTTPFlow 遇到连接或协议错误时触发。
     """
 
     name = "error"
@@ -100,6 +119,8 @@ class HttpConnectUpstreamHook(commands.StartHook):
 
     CONNECT requests do not generate the usual HTTP handler events,
     but all requests going over the newly opened connection will.
+
+    中文说明：对应 `http_connect_upstream(flow)`，CONNECT 即将发送给上游代理时触发。
     """
 
     flow: http.HTTPFlow

@@ -220,6 +220,7 @@ class CommandManager:
             if not i.startswith("__"):
                 o = getattr(addon, i)
                 try:
+                    # todo: func 不算命令？那这里的 str 是一个全局类变量？
                     # hasattr is not enough, see https://github.com/mitmproxy/mitmproxy/issues/3794
                     is_command = isinstance(getattr(o, "command_name", None), str)
                 except Exception:

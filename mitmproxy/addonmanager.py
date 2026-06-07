@@ -188,6 +188,7 @@ class AddonManager:
                     "An addon called '%s' already exists." % name
                 )
         loader = Loader(self.master)
+        # 触发 load 事件, 这里说明所有的 load 方法必须是同步方法
         self.invoke_addon_sync(addon, LoadHook(loader))
         for a in traverse([addon]):
             name = _get_name(a)

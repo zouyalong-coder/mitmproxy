@@ -1,3 +1,17 @@
+"""
+HTTP 协议 layer 主状态机。
+
+本模块把 HTTP/1、HTTP/2、HTTP/3 连接解析器产生的 `HttpEvent` 统一汇入
+`HttpStream`，创建/更新 `HTTPFlow`，触发 request/response/connect/error hook，
+并通过 `HttpLayer` 管理多路复用 stream、连接复用和上游连接获取。
+
+触发点：
+- 底层解析器通过 `ReceiveHttp` 送入 Request/Response 事件。
+- `HttpStream` 在合适时机触发 `requestheaders/request/responseheaders/response/error`。
+- CONNECT 请求会触发 `http_connect/http_connected/http_connect_error`。
+- `HttpLayer` 处理 `GetHttpConnection`、`SendHttp`、`DropStream` 等内部命令。
+"""
+
 import collections
 import enum
 import time
@@ -68,6 +82,13 @@ from mitmproxy.websocket import WebSocketData
 
 
 class HTTPMode(enum.Enum):
+    """
+    HTTP layer 的运行模式。
+
+    regular 表示显式代理，transparent 表示目标已知模式，upstream 表示请求需要
+    发往上游 HTTP 代理。
+    """
+
     regular = 1
     transparent = 2
     upstream = 3
@@ -76,6 +97,11 @@ class HTTPMode(enum.Enum):
 def validate_request(
     mode: HTTPMode, request: http.Request, validate_inbound_headers: bool
 ) -> str | None:
+    """
+    校验客户端请求是否适合当前 HTTP 模式。
+
+    返回字符串表示错误原因，返回 None 表示请求有效。
+    """
     if request.scheme not in ("http", "https", ""):
         return f"Invalid request scheme: {request.scheme}"
     if mode is HTTPMode.transparent and request.method == "CONNECT":
@@ -95,6 +121,9 @@ def validate_request(
 
 
 def is_h3_alpn(alpn: bytes | None) -> bool:
+    """
+    判断 ALPN 是否表示 HTTP/3 或其草案版本。
+    """
     return alpn == b"h3" or (alpn is not None and alpn.startswith(b"h3-"))
 
 
@@ -102,6 +131,9 @@ def is_h3_alpn(alpn: bytes | None) -> bool:
 class GetHttpConnection(HttpCommand):
     """
     Open an HTTP Connection. This may not actually open a connection, but return an existing HTTP connection instead.
+
+    中文说明：HttpStream 用它向 HttpLayer 申请一个可用上游 HTTP 连接；HttpLayer
+    可以复用已有连接，也可以打开新连接。
     """
 
     blocking = True
@@ -114,6 +146,9 @@ class GetHttpConnection(HttpCommand):
         return id(self)
 
     def connection_spec_matches(self, connection: Connection) -> bool:
+        """
+        判断已有连接是否满足本次请求的目标地址、TLS、上游代理和传输协议要求。
+        """
         return (
             isinstance(connection, Server)
             and self.address == connection.address
@@ -125,6 +160,10 @@ class GetHttpConnection(HttpCommand):
 
 @dataclass
 class GetHttpConnectionCompleted(events.CommandCompleted):
+    """
+    GetHttpConnection 的完成事件，返回连接对象或错误信息。
+    """
+
     command: GetHttpConnection
     reply: tuple[None, str] | tuple[Connection, None]
     """connection object, error message"""
@@ -134,6 +173,8 @@ class GetHttpConnectionCompleted(events.CommandCompleted):
 class RegisterHttpConnection(HttpCommand):
     """
     Register that a HTTP connection attempt has been completed.
+
+    中文说明：HttpLayer 用它记录连接建立结果，方便后续复用或错误处理。
     """
 
     connection: Connection
@@ -142,6 +183,10 @@ class RegisterHttpConnection(HttpCommand):
 
 @dataclass
 class SendHttp(HttpCommand):
+    """
+    将一个 HttpEvent 发送到指定 HTTP 连接解析器。
+    """
+
     event: HttpEvent
     connection: Connection
 
@@ -151,12 +196,23 @@ class SendHttp(HttpCommand):
 
 @dataclass
 class DropStream(HttpCommand):
-    """Signal to the HTTP layer that this stream is done processing and can be dropped from memory."""
+    """
+    Signal to the HTTP layer that this stream is done processing and can be dropped from memory.
+
+    中文说明：HttpStream 完成后通知 HttpLayer 可以释放对应 stream_id 的状态。
+    """
 
     stream_id: StreamId
 
 
 class HttpStream(layer.Layer):
+    """
+    单个 HTTP 请求/响应 stream 的状态机。
+
+    HTTP/1 一个连接通常只有一个活跃 stream，HTTP/2/3 可以有多个。该类负责把
+    头、数据、trailers、end-of-message 组装成 HTTPFlow，并在正确时机触发 hook。
+    """
+
     request_body_buf: ReceiveBuffer
     response_body_buf: ReceiveBuffer
     flow: http.HTTPFlow
@@ -171,6 +227,9 @@ class HttpStream(layer.Layer):
         return parent.mode
 
     def __init__(self, context: Context, stream_id: int) -> None:
+        """
+        初始化请求/响应 body 缓冲区和双向状态机。
+        """
         super().__init__(context)
         self.request_body_buf = ReceiveBuffer()
         self.response_body_buf = ReceiveBuffer()
@@ -192,6 +251,9 @@ class HttpStream(layer.Layer):
 
     @expect(events.Start, HttpEvent)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        HttpStream 总入口：按事件方向分发到客户端侧或服务端侧状态函数。
+        """
         if isinstance(event, events.Start):
             self.client_state = self.state_wait_for_request_headers
         elif isinstance(event, (RequestProtocolError, ResponseProtocolError)):
@@ -207,6 +269,9 @@ class HttpStream(layer.Layer):
     def state_wait_for_request_headers(
         self, event: RequestHeaders
     ) -> layer.CommandGenerator[None]:
+        """
+        等待请求头状态：创建 HTTPFlow、补全目标信息并处理 CONNECT/普通请求。
+        """
         if not event.replay_flow:
             self.flow = http.HTTPFlow(self.context.client, self.context.server)
 
@@ -294,6 +359,12 @@ class HttpStream(layer.Layer):
         self.server_state = self.state_wait_for_response_headers
 
     def start_request_stream(self) -> layer.CommandGenerator[None]:
+        """
+        开启请求体流式转发。
+
+        触发点：requestheaders hook 后，如果 addon 或配置要求流式处理请求体，
+        后续 `RequestData` 会边到达边发送到服务器。
+        """
         if self.flow.response:
             raise NotImplementedError(
                 "Can't set a response and enable streaming at the same time."
@@ -313,6 +384,9 @@ class HttpStream(layer.Layer):
     def state_stream_request_body(
         self, event: RequestData | RequestEndOfMessage
     ) -> layer.CommandGenerator[None]:
+        """
+        流式请求体状态：逐块处理客户端 body，并在结束时触发 request hook。
+        """
         if isinstance(event, RequestData):
             if callable(self.flow.request.stream):
                 chunks = self.flow.request.stream(event.data)
@@ -363,6 +437,12 @@ class HttpStream(layer.Layer):
     def state_consume_request_body(
         self, event: events.Event
     ) -> layer.CommandGenerator[None]:
+        """
+        缓冲请求体状态：收完整个请求 body 后再触发 request hook。
+
+        addon 可以在 request hook 中直接设置 `flow.response`，此时请求不会继续
+        发往服务器，而是进入本地响应发送流程。
+        """
         if isinstance(event, RequestData):
             self.request_body_buf += event.data
             yield from self.check_body_size(True)
@@ -413,6 +493,9 @@ class HttpStream(layer.Layer):
     def state_wait_for_response_headers(
         self, event: ResponseHeaders
     ) -> layer.CommandGenerator[None]:
+        """
+        等待响应头状态：收到服务器响应头后触发 responseheaders hook。
+        """
         self.flow.response = event.response
 
         if not event.end_stream and (yield from self.check_body_size(False)):
@@ -430,6 +513,12 @@ class HttpStream(layer.Layer):
             self.server_state = self.state_consume_response_body
 
     def start_response_stream(self) -> layer.CommandGenerator[None]:
+        """
+        开启响应体流式转发。
+
+        触发点：responseheaders hook 后，如果响应被标记为 stream，后续
+        `ResponseData` 会边到达边转给客户端。
+        """
         assert self.flow.response
         yield SendHttp(
             ResponseHeaders(self.stream_id, self.flow.response, end_stream=False),
@@ -442,6 +531,9 @@ class HttpStream(layer.Layer):
     def state_stream_response_body(
         self, event: events.Event
     ) -> layer.CommandGenerator[None]:
+        """
+        流式响应体状态：逐块处理服务器 body，并在结束时触发 response hook。
+        """
         assert self.flow.response
         if isinstance(event, ResponseData):
             if callable(self.flow.response.stream):
@@ -479,6 +571,9 @@ class HttpStream(layer.Layer):
     def state_consume_response_body(
         self, event: events.Event
     ) -> layer.CommandGenerator[None]:
+        """
+        缓冲响应体状态：收完整个响应 body 后再统一发送给客户端。
+        """
         if isinstance(event, ResponseData):
             self.response_body_buf += event.data
             yield from self.check_body_size(False)
@@ -492,7 +587,12 @@ class HttpStream(layer.Layer):
             yield from self.send_response()
 
     def send_response(self, already_streamed: bool = False):
-        """We have either consumed the entire response from the server or the response was set by an addon."""
+        """
+        We have either consumed the entire response from the server or the response was set by an addon.
+
+        中文说明：触发 response hook，识别 WebSocket 升级，并把响应头、body、
+        trailers 和 EOM 写回客户端。
+        """
         assert self.flow.response
         self.flow.response.timestamp_end = time.time()
 
@@ -535,6 +635,12 @@ class HttpStream(layer.Layer):
             yield from self.flow_done()
 
     def flow_done(self) -> layer.CommandGenerator[None]:
+        """
+        完成一个 HTTP flow，并在协议升级时切换到子 layer。
+
+        触发点：请求侧和响应侧都结束后调用。101 响应会把后续字节交给
+        WebSocket 或 TCP layer；普通 HTTP flow 则发送 `DropStream` 释放状态。
+        """
         if not self.flow.websocket:
             self.flow.live = False
 
@@ -650,6 +756,9 @@ class HttpStream(layer.Layer):
         return False
 
     def check_invalid(self, request: bool) -> layer.CommandGenerator[bool]:
+        """
+        校验请求/响应头是否合法，发现请求走私风险时终止 flow。
+        """
         err: str | None = None
         if request:
             err = validate_request(
@@ -694,6 +803,12 @@ class HttpStream(layer.Layer):
             return False
 
     def check_killed(self, emit_error_hook: bool) -> layer.CommandGenerator[bool]:
+        """
+        检查 flow 是否被 addon 或远端关闭终止。
+
+        hook 等待期间事件会进入 `_paused_event_queue`，这里会窥探队列判断
+        客户端是否已经断开，以免继续处理已经死亡的 flow。
+        """
         killed_by_us = (
             self.flow.error and self.flow.error.msg == flow.Error.KILLED_MESSAGE
         )
@@ -723,6 +838,12 @@ class HttpStream(layer.Layer):
     def handle_protocol_error(
         self, event: RequestProtocolError | ResponseProtocolError
     ) -> layer.CommandGenerator[None]:
+        """
+        统一处理客户端侧或服务器侧 HTTP 协议错误。
+
+        请求错误若发生在已开始上游通信之后，需要转发给服务器解析器；响应错误
+        则通知客户端解析器，并触发 error hook。
+        """
         is_client_error_but_we_already_talk_upstream = (
             isinstance(event, RequestProtocolError)
             and self.client_state in (self.state_stream_request_body, self.state_done)
@@ -882,6 +1003,12 @@ class HttpStream(layer.Layer):
 
     @expect(RequestData, RequestEndOfMessage, events.Event)
     def passthrough(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        隧道/升级后的透传桥接。
+
+        CONNECT 成功或 HTTP 101 升级后，HTTP 事件会被转换成普通连接事件交给
+        child layer；child layer 发出的连接命令再被包装回 HTTP event。
+        """
         assert self.flow.response
         assert self.child_layer
         # HTTP events -> normal connection events
@@ -943,13 +1070,16 @@ class HttpStream(layer.Layer):
 
     @expect()
     def state_uninitialized(self, _) -> layer.CommandGenerator[None]:
+        """初始空状态，等待 `events.Start` 激活。"""
         yield from ()
 
     @expect()
     def state_done(self, _) -> layer.CommandGenerator[None]:
+        """已完成状态，静默忽略后续事件。"""
         yield from ()
 
     def state_errored(self, _) -> layer.CommandGenerator[None]:
+        """错误状态，静默消费后续事件以保持状态机稳定。"""
         # silently consume every event.
         yield from ()
 
@@ -962,6 +1092,10 @@ class HttpLayer(layer.Layer):
     ConnectionCommand: Send b"GET /\r\n\r\n" to server.
 
     ConnectionEvent -> HttpEvent -> HttpCommand -> ConnectionCommand
+
+    中文说明：连接级 HTTP layer，负责把底层连接事件交给 HTTP/1/2/3
+    解析器，把解析出的 `ReceiveHttp` 路由到对应 `HttpStream`，并处理
+    stream 发出的连接申请、发送、丢弃等命令。
     """
 
     mode: HTTPMode
@@ -973,6 +1107,12 @@ class HttpLayer(layer.Layer):
     ]
 
     def __init__(self, context: Context, mode: HTTPMode):
+        """
+        初始化连接表、stream 表和阻塞命令来源表。
+
+        `waiting_for_establishment` 记录等待同一服务器连接建立的多个 stream，
+        连接成功/失败后会统一回调。
+        """
         super().__init__(context)
         self.mode = mode
 
@@ -985,6 +1125,9 @@ class HttpLayer(layer.Layer):
         return f"HttpLayer({self.mode.name}, conns: {len(self.connections)})"
 
     def _handle_event(self, event: events.Event):
+        """
+        HttpLayer 总入口：根据事件类型路由到客户端/服务器 HTTP 解析器或 stream。
+        """
         if isinstance(event, events.Start):
             http_conn: HttpConnection
             if is_h3_alpn(self.context.client.alpn):
@@ -1059,6 +1202,14 @@ class HttpLayer(layer.Layer):
         child: layer.Layer | HttpStream,
         event: events.Event,
     ) -> layer.CommandGenerator[None]:
+        """
+        把事件送入子 layer，并解释子 layer 产出的命令。
+
+        这里是 HTTP 层的路由枢纽：
+        - HTTP 解析器产出 `ReceiveHttp` 时，创建/查找对应 `HttpStream`。
+        - stream 产出 `SendHttp` 时，回送给目标连接解析器。
+        - 阻塞命令会登记来源，以便 `CommandCompleted` 能回到正确 stream。
+        """
         for command in child.handle_event(event):
             assert isinstance(command, commands.Command)
             # Streams may yield blocking commands, which ultimately generate CommandCompleted events.
@@ -1096,6 +1247,11 @@ class HttpLayer(layer.Layer):
                 raise AssertionError(f"Not a command: {event}")
 
     def make_stream(self, stream_id: int) -> layer.CommandGenerator[None]:
+        """
+        为新的 HTTP stream 创建 `HttpStream` 状态机。
+
+        触发点：HTTP/1/2/3 解析器第一次产出对应 stream_id 的 RequestHeaders。
+        """
         ctx = self.context.fork()
         self.streams[stream_id] = HttpStream(ctx, stream_id)
         yield from self.event_to_child(self.streams[stream_id], events.Start())
@@ -1103,6 +1259,12 @@ class HttpLayer(layer.Layer):
     def get_connection(
         self, event: GetHttpConnection, *, reuse: bool = True
     ) -> layer.CommandGenerator[None]:
+        """
+        为 stream 获取可用上游 HTTP 连接。
+
+        优先复用满足目标地址、TLS、上游代理、传输协议条件的连接；没有可复用连接
+        时，根据 upstream/tls/quic 等需求搭建隧道栈并启动连接建立流程。
+        """
         # Do we already have a connection we can re-use?
         if reuse:
             for connection in self.connections:
@@ -1197,6 +1359,11 @@ class HttpLayer(layer.Layer):
     def register_connection(
         self, command: RegisterHttpConnection
     ) -> layer.CommandGenerator[None]:
+        """
+        连接建立完成后的回调分发。
+
+        同一服务器连接建立期间可能有多个 stream 在等待，结果会广播给所有等待者。
+        """
         waiting = self.waiting_for_establishment.pop(command.connection)
 
         reply: tuple[None, str] | tuple[Connection, None]
@@ -1225,10 +1392,20 @@ class HttpLayer(layer.Layer):
 
 
 class HttpClient(layer.Layer):
+    """
+    出站 HTTP 客户端连接启动器。
+
+    `HttpLayer.get_connection()` 创建连接栈后，最末端使用本 layer 打开 TCP/QUIC
+    连接，并按 ALPN 选择 HTTP/1、HTTP/2 或 HTTP/3 客户端解析器。
+    """
+
     child_layer: layer.Layer
 
     @expect(events.Start)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        打开服务器连接并注册连接建立结果。
+        """
         err: str | None
         if self.context.server.connected:
             err = None

@@ -1,3 +1,16 @@
+"""
+DNS 协议 layer。
+
+本模块负责解析客户端/上游的 DNS 报文，创建 `DNSFlow`，触发 DNS hook，并在
+需要时把请求转发给上游 DNS 服务器。UDP DNS 一包一个报文；TCP DNS 使用两字节
+长度前缀，因此这里维护请求/响应缓冲区。
+
+触发点：
+- `Start`：进入查询状态。
+- `DataReceived`：解析 DNS 报文，客户端方向触发 `dns_request`，服务端方向触发 `dns_response`。
+- `ConnectionClosed`：关闭对端连接并标记所有 DNSFlow 不再 live。
+"""
+
 import struct
 import time
 from dataclasses import dataclass
@@ -20,6 +33,8 @@ _LENGTH_LABEL = struct.Struct("!H")
 class DnsRequestHook(commands.StartHook):
     """
     A DNS query has been received.
+
+    中文说明：对应 addon 里的 `dns_request(flow)`，客户端 DNS 查询解析完成后触发。
     """
 
     flow: dns.DNSFlow
@@ -29,6 +44,8 @@ class DnsRequestHook(commands.StartHook):
 class DnsResponseHook(commands.StartHook):
     """
     A DNS response has been received or set.
+
+    中文说明：对应 `dns_response(flow)`，上游响应到达或 addon 直接设置 response 后触发。
     """
 
     flow: dns.DNSFlow
@@ -38,6 +55,8 @@ class DnsResponseHook(commands.StartHook):
 class DnsErrorHook(commands.StartHook):
     """
     A DNS error has occurred.
+
+    中文说明：对应 `dns_error(flow)`，解析、连接或处理失败时触发。
     """
 
     flow: dns.DNSFlow
@@ -46,6 +65,11 @@ class DnsErrorHook(commands.StartHook):
 def pack_message(
     message: dns.DNSMessage, transport_protocol: Literal["tcp", "udp"]
 ) -> bytes:
+    """
+    将 DNSMessage 打包为对应传输协议的 wire bytes。
+
+    TCP DNS 需要在报文前加 2 字节长度字段；UDP DNS 直接发送报文本体。
+    """
     packed = message.packed
     if transport_protocol == "tcp":
         return struct.pack("!H", len(packed)) + packed
@@ -56,6 +80,9 @@ def pack_message(
 class DNSLayer(layer.Layer):
     """
     Layer that handles resolving DNS queries.
+
+    中文说明：管理多个 DNSFlow，以 DNS message id 关联请求和响应，并把 hook
+    设置的响应或错误转换为返回给客户端的 DNS 报文。
     """
 
     flows: dict[int, dns.DNSFlow]
@@ -63,6 +90,9 @@ class DNSLayer(layer.Layer):
     resp_buf: bytearray
 
     def __init__(self, context: Context):
+        """
+        初始化 DNS layer 的 flow 映射和 TCP 缓冲区。
+        """
         super().__init__(context)
         self.flows = {}
         self.req_buf = bytearray()
@@ -71,6 +101,9 @@ class DNSLayer(layer.Layer):
     def handle_request(
         self, flow: dns.DNSFlow, msg: dns.DNSMessage
     ) -> layer.CommandGenerator[None]:
+        """
+        处理客户端 DNS 请求：触发 hook、短路响应或转发上游。
+        """
         flow.request = msg  # if already set, continue and query upstream again
         yield DnsRequestHook(flow)
         if flow.response:
@@ -94,6 +127,9 @@ class DNSLayer(layer.Layer):
     def handle_response(
         self, flow: dns.DNSFlow, msg: dns.DNSMessage
     ) -> layer.CommandGenerator[None]:
+        """
+        处理 DNS 响应：触发 hook，并把最终响应发回客户端。
+        """
         flow.response = msg
         yield DnsResponseHook(flow)
         if flow.response:
@@ -101,6 +137,9 @@ class DNSLayer(layer.Layer):
             yield commands.SendData(self.context.client, packed)
 
     def handle_error(self, flow: dns.DNSFlow, err: str) -> layer.CommandGenerator[None]:
+        """
+        处理 DNS 错误：触发 dns_error，并向客户端返回 SERVFAIL。
+        """
         flow.error = mflow.Error(err)
         yield DnsErrorHook(flow)
         servfail = flow.request.fail(response_codes.SERVFAIL)
@@ -110,6 +149,12 @@ class DNSLayer(layer.Layer):
         )
 
     def unpack_message(self, data: bytes, from_client: bool) -> List[dns.DNSMessage]:
+        """
+        从原始传输数据中解析出一个或多个 DNSMessage。
+
+        UDP 直接解析单个 datagram；TCP 会把数据追加到方向对应的缓冲区，并按
+        两字节长度前缀尽可能拆出完整报文。
+        """
         msgs: List[dns.DNSMessage] = []
 
         buf = self.req_buf if from_client else self.resp_buf
@@ -142,11 +187,17 @@ class DNSLayer(layer.Layer):
 
     @expect(events.Start)
     def state_start(self, _) -> layer.CommandGenerator[None]:
+        """
+        `Start` 事件入口：切换到 DNS 查询处理状态。
+        """
         self._handle_event = self.state_query
         yield from ()
 
     @expect(events.DataReceived, events.ConnectionClosed)
     def state_query(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        DNS 查询状态：处理双向数据和连接关闭。
+        """
         assert isinstance(event, events.ConnectionEvent)
         from_client = event.connection is self.context.client
 
@@ -185,6 +236,9 @@ class DNSLayer(layer.Layer):
 
     @expect(events.DataReceived, events.ConnectionClosed)
     def state_done(self, _) -> layer.CommandGenerator[None]:
+        """
+        终止状态：DNS layer 结束后忽略后续事件。
+        """
         yield from ()
 
     _handle_event = state_start

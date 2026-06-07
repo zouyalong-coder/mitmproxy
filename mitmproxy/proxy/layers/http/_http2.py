@@ -1,3 +1,17 @@
+"""
+HTTP/2 连接解析与序列化 layer。
+
+本模块用 hyper-h2 在连接事件和 mitmproxy 内部 `HttpEvent` 之间做转换。
+`Http2Server` 面向客户端连接，接收 HTTP/2 请求帧并发送响应帧；`Http2Client`
+面向上游服务器连接，发送请求帧并解析响应帧。
+
+触发点：
+- `Start` 发送 HTTP/2 connection preface/settings。
+- `DataReceived` 输入二进制帧并产出 Request/Response 类 `ReceiveHttp`。
+- `HttpEvent` 输入时被转换为 headers/data/trailers/RST_STREAM 等 HTTP/2 帧。
+- `Wakeup` 用于可选的 HTTP/2 keep-alive PING。
+"""
+
 import collections
 import time
 from collections.abc import Sequence
@@ -55,6 +69,13 @@ from mitmproxy.utils import human
 
 
 class StreamState(Enum):
+    """
+    mitmproxy 侧跟踪的 HTTP/2 stream 阶段。
+
+    EXPECTING_HEADERS 表示请求已发出、正在等响应头；HEADERS_RECEIVED 表示已
+    收到头部，后续可接收 DATA/trailers/EOM。
+    """
+
     EXPECTING_HEADERS = 1
     HEADERS_RECEIVED = 2
 
@@ -63,6 +84,13 @@ CATCH_HYPER_H2_ERRORS = (ValueError, IndexError)
 
 
 class Http2Connection(HttpConnection):
+    """
+    HTTP/2 客户端/服务器解析器的公共基类。
+
+    负责维护 hyper-h2 连接对象、活跃 stream 状态，以及 HTTP/2 错误码与
+    mitmproxy `ErrorCode` 之间的映射。
+    """
+
     h2_conf: ClassVar[h2.config.H2Configuration]
     h2_conf_defaults: dict[str, Any] = dict(
         header_encoding=False,
@@ -81,6 +109,7 @@ class Http2Connection(HttpConnection):
     ReceiveEndOfMessage: type[RequestEndOfMessage | ResponseEndOfMessage]
 
     def __init__(self, context: Context, conn: Connection):
+        """初始化 hyper-h2 连接配置和活跃 stream 表。"""
         super().__init__(context, conn)
         if self.debug:
             self.h2_conf.logger = H2ConnectionLogger(
@@ -93,7 +122,11 @@ class Http2Connection(HttpConnection):
         self.streams = {}
 
     def is_closed(self, stream_id: int) -> bool:
-        """Check if a non-idle stream is closed"""
+        """
+        Check if a non-idle stream is closed.
+
+        中文说明：用于决定是否还能对某个 stream 发送 RST 或数据。
+        """
         stream = self.h2_conn.streams.get(stream_id, None)
         if (
             stream is not None
@@ -106,7 +139,11 @@ class Http2Connection(HttpConnection):
             return True
 
     def is_open_for_us(self, stream_id: int) -> bool:
-        """Check if we can write to a non-idle stream."""
+        """
+        Check if we can write to a non-idle stream.
+
+        中文说明：本端未 half-close/close 时，才允许继续写 DATA、headers 等帧。
+        """
         stream = self.h2_conn.streams.get(stream_id, None)
         if (
             stream is not None
@@ -121,6 +158,9 @@ class Http2Connection(HttpConnection):
             return False
 
     def _handle_event(self, event: Event) -> CommandGenerator[None]:
+        """
+        HTTP/2 总入口：处理启动、内部 HttpEvent、底层数据和连接关闭。
+        """
         if isinstance(event, Start):
             self.h2_conn.initiate_connection()
             yield SendData(self.conn, self.h2_conn.data_to_send())
@@ -223,7 +263,12 @@ class Http2Connection(HttpConnection):
             raise AssertionError(f"Unexpected event: {event!r}")
 
     def handle_h2_event(self, event: h2.events.Event) -> CommandGenerator[bool]:
-        """returns true if further processing should be stopped."""
+        """
+        returns true if further processing should be stopped.
+
+        中文说明：把 hyper-h2 事件转换为 `ReceiveHttp`，并处理 RST、GOAWAY、
+        settings、push promise 等控制帧。
+        """
         if isinstance(event, h2.events.DataReceived):
             state = self.streams.get(event.stream_id, None)
             if state is StreamState.HEADERS_RECEIVED:
@@ -316,12 +361,18 @@ class Http2Connection(HttpConnection):
         message: str,
         error_code: int = h2.errors.ErrorCodes.PROTOCOL_ERROR,
     ) -> CommandGenerator[None]:
+        """
+        发送 GOAWAY/关闭连接，并把错误传播到所有活跃 stream。
+        """
         yield Log(f"{human.format_address(self.conn.peername)}: {message}")
         self.h2_conn.close_connection(error_code, message.encode())
         yield SendData(self.conn, self.h2_conn.data_to_send())
         yield from self.close_connection(message)
 
     def close_connection(self, msg: str) -> CommandGenerator[None]:
+        """
+        关闭底层连接，并为所有仍活跃的 stream 产出协议错误。
+        """
         yield CloseConnection(self.conn)
         for stream_id in self.streams:
             yield ReceiveHttp(
@@ -334,12 +385,16 @@ class Http2Connection(HttpConnection):
 
     @expect(DataReceived, HttpEvent, ConnectionClosed, Wakeup)
     def done(self, _) -> CommandGenerator[None]:
+        """连接关闭后的空状态。"""
         yield from ()
 
 
 def normalize_h1_headers(
     headers: list[tuple[bytes, bytes]], is_client: bool
 ) -> list[tuple[bytes, bytes]]:
+    """
+    把 HTTP/1 风格头字段规范化为 HTTP/2 可发送格式。
+    """
     # HTTP/1 servers commonly send capitalized headers (Content-Length vs content-length),
     # which isn't valid HTTP/2. As such we normalize.
     # Make sure that this is not just an iterator but an iterable,
@@ -353,6 +408,9 @@ def normalize_h1_headers(
 
 
 def normalize_h2_headers(headers: list[tuple[bytes, bytes]]) -> CommandGenerator[None]:
+    """
+    按需把 HTTP/2 头字段名改为小写，并记录日志。
+    """
     for i in range(len(headers)):
         if not headers[i][0].islower():
             yield Log(
@@ -365,6 +423,9 @@ def format_h2_request_headers(
     context: Context,
     event: RequestHeaders,
 ) -> CommandGenerator[list[tuple[bytes, bytes]]]:
+    """
+    把 mitmproxy RequestHeaders 转换为 HTTP/2 伪头 + 普通头列表。
+    """
     pseudo_headers = [
         (b":method", event.request.data.method),
         (b":scheme", event.request.data.scheme),
@@ -391,6 +452,9 @@ def format_h2_response_headers(
     context: Context,
     event: ResponseHeaders,
 ) -> CommandGenerator[list[tuple[bytes, bytes]]]:
+    """
+    把 mitmproxy ResponseHeaders 转换为 HTTP/2 响应头列表。
+    """
     headers = [
         (b":status", b"%d" % event.response.status_code),
         *event.response.headers.fields,
@@ -404,6 +468,12 @@ def format_h2_response_headers(
 
 
 class Http2Server(Http2Connection):
+    """
+    面向客户端连接的 HTTP/2 服务端解析器。
+
+    接收客户端 RequestReceived/Data/Trailers/StreamEnded，并向客户端发送响应。
+    """
+
     h2_conf = h2.config.H2Configuration(
         **Http2Connection.h2_conf_defaults,
         client_side=False,
@@ -415,9 +485,11 @@ class Http2Server(Http2Connection):
     ReceiveEndOfMessage = RequestEndOfMessage
 
     def __init__(self, context: Context):
+        """绑定客户端连接。"""
         super().__init__(context, context.client)
 
     def _handle_event(self, event: Event) -> CommandGenerator[None]:
+        """服务端侧额外处理响应头发送，其余事件交给公共 HTTP/2 逻辑。"""
         if isinstance(event, ResponseHeaders):
             if self.is_open_for_us(event.stream_id):
                 self.h2_conn.send_headers(
@@ -432,6 +504,7 @@ class Http2Server(Http2Connection):
             yield from super()._handle_event(event)
 
     def handle_h2_event(self, event: h2.events.Event) -> CommandGenerator[bool]:
+        """解析客户端发来的 HTTP/2 请求头。"""
         if isinstance(event, h2.events.RequestReceived):
             try:
                 (
@@ -472,6 +545,13 @@ class Http2Server(Http2Connection):
 
 
 class Http2Client(Http2Connection):
+    """
+    面向上游服务器连接的 HTTP/2 客户端解析器。
+
+    负责发送请求、接收响应，并在 HTTP/2 多路复用下维护 mitmproxy stream_id
+    与实际 HTTP/2 outbound stream_id 的映射。
+    """
+
     h2_conf = h2.config.H2Configuration(
         **Http2Connection.h2_conf_defaults,
         client_side=True,
@@ -492,6 +572,7 @@ class Http2Client(Http2Connection):
     """Timestamp of when we've last seen network activity on this connection."""
 
     def __init__(self, context: Context):
+        """初始化客户端侧 stream 映射和并发等待队列。"""
         super().__init__(context, context.server)
         # Disable HTTP/2 push for now to keep things simple.
         # don't send here, that is done as part of initiate_connection().
@@ -503,6 +584,9 @@ class Http2Client(Http2Connection):
         self.stream_queue = collections.defaultdict(list)
 
     def _handle_event(self, event: Event) -> CommandGenerator[None]:
+        """
+        为外部 stream 分配/映射 HTTP/2 stream id，并处理并发上限排队。
+        """
         # We can't reuse stream ids from the client because they may arrived reordered here
         # and HTTP/2 forbids opening a stream on a lower id than what was previously sent (see test_stream_concurrency).
         # To mitigate this, we transparently map the outside's stream id to our stream id.
@@ -537,6 +621,9 @@ class Http2Client(Http2Connection):
                 yield from self._handle_event(event)
 
     def _handle_event2(self, event: Event) -> CommandGenerator[None]:
+        """
+        客户端侧实际事件处理：keepalive、发送请求头、以及公共 HTTP/2 逻辑。
+        """
         if isinstance(event, Wakeup):
             send_ping_now = (
                 # add one second to avoid unnecessary roundtrip, we don't need to be super correct here.
@@ -578,6 +665,9 @@ class Http2Client(Http2Connection):
             yield from super()._handle_event(event)
 
     def handle_h2_event(self, event: h2.events.Event) -> CommandGenerator[bool]:
+        """
+        解析服务器返回的响应头、忽略/记录信息性响应，并处理 settings 更新。
+        """
         if isinstance(event, h2.events.ResponseReceived):
             if (
                 self.streams.get(event.stream_id, None)
@@ -640,6 +730,11 @@ class Http2Client(Http2Connection):
 def split_pseudo_headers(
     h2_headers: Sequence[tuple[bytes, bytes]],
 ) -> tuple[dict[bytes, bytes], http.Headers]:
+    """
+    拆分 HTTP/2 伪头字段和普通头字段。
+
+    伪头必须位于普通头之前，重复伪头会被视为协议错误。
+    """
     pseudo_headers: dict[bytes, bytes] = {}
     i = 0
     for header, value in h2_headers:
@@ -660,7 +755,11 @@ def split_pseudo_headers(
 def parse_h2_request_headers(
     h2_headers: Sequence[tuple[bytes, bytes]],
 ) -> tuple[str, int, bytes, bytes, bytes, bytes, http.Headers]:
-    """Split HTTP/2 pseudo-headers from the actual headers and parse them."""
+    """
+    Split HTTP/2 pseudo-headers from the actual headers and parse them.
+
+    中文说明：解析 `:method/:scheme/:path/:authority`，并推导 host/port。
+    """
     pseudo_headers, headers = split_pseudo_headers(h2_headers)
 
     try:
@@ -690,7 +789,11 @@ def parse_h2_request_headers(
 def parse_h2_response_headers(
     h2_headers: Sequence[tuple[bytes, bytes]],
 ) -> tuple[int, http.Headers]:
-    """Split HTTP/2 pseudo-headers from the actual headers and parse them."""
+    """
+    Split HTTP/2 pseudo-headers from the actual headers and parse them.
+
+    中文说明：解析 `:status` 并返回普通响应头。
+    """
     pseudo_headers, headers = split_pseudo_headers(h2_headers)
 
     try:

@@ -1,3 +1,15 @@
+"""
+QUIC/TLS 握手 hook 数据结构。
+
+QUIC 使用 TLS 1.3 完成加密参数和 ALPN 协商。本模块定义 start_client 和
+start_server 阶段传给 addon 的数据对象，`tlsconfig` 等 addon 会在这些 hook
+里填充证书、ALPN、CA、校验策略等设置。
+
+触发点：
+- `QuicLayer` 作为服务器面对客户端握手前触发 `QuicStartClientHook`。
+- `QuicLayer` 作为客户端连接上游服务器前触发 `QuicStartServerHook`。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +30,8 @@ from mitmproxy.tls import TlsData
 class QuicTlsSettings:
     """
     Settings necessary to establish QUIC's TLS context.
+
+    中文说明：这些字段最终会转换为 aioquic 的 TLS/QUIC 配置。
     """
 
     alpn_protocols: list[str] | None = None
@@ -44,6 +58,8 @@ class QuicTlsSettings:
 class QuicTlsData(TlsData):
     """
     Event data for `quic_start_client` and `quic_start_server` event hooks.
+
+    中文说明：继承通用 TLS hook 数据，并额外携带 QUIC 专用 TLS 设置。
     """
 
     settings: QuicTlsSettings | None = None
@@ -60,6 +76,8 @@ class QuicStartClientHook(commands.StartHook):
 
     An addon is expected to initialize data.settings.
     (by default, this is done by `mitmproxy.addons.tlsconfig`)
+
+    中文说明：mitmproxy 接受客户端 QUIC 握手前触发。
     """
 
     data: QuicTlsData
@@ -72,6 +90,8 @@ class QuicStartServerHook(commands.StartHook):
 
     An addon is expected to initialize data.settings.
     (by default, this is done by `mitmproxy.addons.tlsconfig`)
+
+    中文说明：mitmproxy 连接上游 QUIC 服务器前触发。
     """
 
     data: QuicTlsData

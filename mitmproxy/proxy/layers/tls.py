@@ -1,3 +1,16 @@
+"""
+TLS/DTLS 隧道 layer。
+
+本模块负责在现有连接上建立 TLS/DTLS，解析客户端 ClientHello，触发 TLS hook，
+并把加密流量和子 layer 之间转换为明文 `DataReceived`/`SendData` 事件。
+
+触发点：
+- ClientHello 完整到达：触发 `tls_clienthello`。
+- 客户端/服务端 TLS 即将开始：触发 `tls_start_client` / `tls_start_server`。
+- 握手成功：触发 `tls_established_client` / `tls_established_server`。
+- 握手失败：触发 `tls_failed_client` / `tls_failed_server`。
+"""
+
 import struct
 import time
 import typing
@@ -34,6 +47,9 @@ def handshake_record_contents(data: bytes) -> Iterator[bytes]:
     Returns a generator that yields the bytes contained in each handshake record.
     This will raise an error on the first non-handshake record, so fully exhausting this
     generator is a bad idea.
+
+    中文说明：只迭代 TLS handshake record 的 payload，用于从首包中拼出完整
+    ClientHello。遇到非 handshake record 会抛错，因为那说明输入不符合预期。
     """
     offset = 0
     while True:
@@ -58,6 +74,9 @@ def get_client_hello(data: bytes) -> bytes | None:
     """
     Read all TLS records that contain the initial ClientHello.
     Returns the raw handshake packet bytes, without TLS record headers.
+
+    中文说明：ClientHello 可能跨多个 TLS record，这里会持续拼接，直到握手头
+    声明的长度已经完整到达。
     """
     client_hello = b""
     for d in handshake_record_contents(data):
@@ -80,6 +99,9 @@ def parse_client_hello(data: bytes) -> ClientHello | None:
 
     Raises:
         - A ValueError, if the passed ClientHello is invalid
+
+    中文说明：返回 `None` 表示数据还不完整，不是解析失败；真正格式错误才抛出
+    ValueError。
     """
     # Check if ClientHello is complete
     client_hello = get_client_hello(data)
@@ -96,6 +118,9 @@ def dtls_handshake_record_contents(data: bytes) -> Iterator[bytes]:
     Returns a generator that yields the bytes contained in each handshake record.
     This will raise an error on the first non-handshake record, so fully exhausting this
     generator is a bad idea.
+
+    中文说明：DTLS record header 比 TLS 多 epoch/sequence 字段，所以长度和偏移
+    与 TLS 版本不同。
     """
     offset = 0
     while True:
@@ -122,6 +147,9 @@ def get_dtls_client_hello(data: bytes) -> bytes | None:
     """
     Read all DTLS records that contain the initial ClientHello.
     Returns the raw handshake packet bytes, without TLS record headers.
+
+    中文说明：DTLS handshake header 更长，这里同样按声明长度等待完整
+    ClientHello。
     """
     client_hello = b""
     for d in dtls_handshake_record_contents(data):
@@ -147,6 +175,8 @@ def dtls_parse_client_hello(data: bytes) -> ClientHello | None:
 
     Raises:
         - A ValueError, if the passed ClientHello is invalid
+
+    中文说明：用于 UDP/DTLS 首包识别，语义和 `parse_client_hello()` 一致。
     """
     # Check if ClientHello is complete
     client_hello = get_dtls_client_hello(data)
@@ -174,6 +204,9 @@ class TlsClienthelloHook(StartHook):
 
     This hook decides whether a server connection is needed
     to negotiate TLS with the client (data.establish_server_tls_first)
+
+    中文说明：对应 addon 里的 `tls_clienthello(data)`，通常由 tlsconfig 决定是否
+    先连上游以获取证书/ALPN 信息。
     """
 
     data: ClientHelloData
@@ -186,6 +219,9 @@ class TlsStartClientHook(StartHook):
 
     An addon is expected to initialize data.ssl_conn.
     (by default, this is done by `mitmproxy.addons.tlsconfig`)
+
+    中文说明：对应 `tls_start_client(data)`，addon 必须提供面向客户端的
+    OpenSSL 连接对象。
     """
 
     data: TlsData
@@ -198,6 +234,9 @@ class TlsStartServerHook(StartHook):
 
     An addon is expected to initialize data.ssl_conn.
     (by default, this is done by `mitmproxy.addons.tlsconfig`)
+
+    中文说明：对应 `tls_start_server(data)`，addon 必须提供面向上游服务器的
+    OpenSSL 连接对象。
     """
 
     data: TlsData
@@ -207,6 +246,8 @@ class TlsStartServerHook(StartHook):
 class TlsEstablishedClientHook(StartHook):
     """
     The TLS handshake with the client has been completed successfully.
+
+    中文说明：对应 `tls_established_client(data)`，客户端侧握手成功后触发。
     """
 
     data: TlsData
@@ -216,6 +257,8 @@ class TlsEstablishedClientHook(StartHook):
 class TlsEstablishedServerHook(StartHook):
     """
     The TLS handshake with the server has been completed successfully.
+
+    中文说明：对应 `tls_established_server(data)`，上游侧握手成功后触发。
     """
 
     data: TlsData
@@ -225,6 +268,8 @@ class TlsEstablishedServerHook(StartHook):
 class TlsFailedClientHook(StartHook):
     """
     The TLS handshake with the client has failed.
+
+    中文说明：对应 `tls_failed_client(data)`，客户端侧握手失败后触发。
     """
 
     data: TlsData
@@ -234,16 +279,28 @@ class TlsFailedClientHook(StartHook):
 class TlsFailedServerHook(StartHook):
     """
     The TLS handshake with the server has failed.
+
+    中文说明：对应 `tls_failed_server(data)`，上游侧握手失败后触发。
     """
 
     data: TlsData
 
 
 class TLSLayer(tunnel.TunnelLayer):
+    """
+    TLS/DTLS tunnel 的公共基类。
+
+    子类负责决定何时开始握手；基类负责调用 OpenSSL、收发密文、向 child layer
+    传递明文，以及在握手成功/失败时触发通用 hook。
+    """
+
     tls: SSL.Connection = None  # type: ignore
     """The OpenSSL connection object"""
 
     def __init__(self, context: context.Context, conn: connection.Connection):
+        """
+        初始化 TLS tunnel，并把对应 Connection 标记为需要 TLS。
+        """
         super().__init__(
             context,
             tunnel_connection=conn,
@@ -266,6 +323,9 @@ class TLSLayer(tunnel.TunnelLayer):
         return "DTLS" if self.is_dtls else "TLS"
 
     def start_tls(self) -> layer.CommandGenerator[None]:
+        """
+        触发 tls_start_* hook，并取得 addon 初始化好的 SSL.Connection。
+        """
         assert not self.tls
 
         tls_start = TlsData(self.conn, self.context, is_dtls=self.is_dtls)
@@ -283,6 +343,9 @@ class TLSLayer(tunnel.TunnelLayer):
         self.tls = tls_start.ssl_conn
 
     def tls_interact(self) -> layer.CommandGenerator[None]:
+        """
+        从 OpenSSL BIO 读取待发送密文，并通过 SendData 发给对端。
+        """
         while True:
             try:
                 data = self.tls.bio_read(65535)
@@ -294,6 +357,12 @@ class TLSLayer(tunnel.TunnelLayer):
     def receive_handshake_data(
         self, data: bytes
     ) -> layer.CommandGenerator[tuple[bool, str | None]]:
+        """
+        向 OpenSSL 输入握手密文并推进握手状态机。
+
+        返回 `(完成?, 错误信息)`；握手成功后会填充证书、ALPN、cipher、TLS 版本
+        等连接元数据，并继续处理可能已解出的明文。
+        """
         # bio_write errors for b"", so we need to check first if we actually received something.
         if data:
             self.tls.bio_write(data)
@@ -398,6 +467,9 @@ class TLSLayer(tunnel.TunnelLayer):
             return True, None
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """
+        统一处理握手失败：记录连接错误、触发 tls_failed_*，再交给 TunnelLayer 收尾。
+        """
         self.conn.error = err
         if self.conn == self.context.client:
             yield TlsFailedClientHook(TlsData(self.conn, self.context, self.tls))
@@ -406,6 +478,9 @@ class TLSLayer(tunnel.TunnelLayer):
         yield from super().on_handshake_error(err)
 
     def receive_data(self, data: bytes) -> layer.CommandGenerator[None]:
+        """
+        处理对端发来的 TLS 密文，解密后转发给 child layer。
+        """
         if data:
             self.tls.bio_write(data)
 
@@ -444,12 +519,18 @@ class TLSLayer(tunnel.TunnelLayer):
             yield from self.event_to_child(events.ConnectionClosed(self.conn))
 
     def receive_close(self) -> layer.CommandGenerator[None]:
+        """
+        处理底层连接关闭，避免重复向 child layer 派发 close。
+        """
         if self.tls.get_shutdown() & SSL.RECEIVED_SHUTDOWN:
             pass  # We have already dispatched a ConnectionClosed to the child layer.
         else:
             yield from super().receive_close()
 
     def send_data(self, data: bytes) -> layer.CommandGenerator[None]:
+        """
+        接收 child layer 的明文，交给 OpenSSL 加密后发送到底层连接。
+        """
         try:
             self.tls.sendall(data)
         except (SSL.ZeroReturnError, SSL.SysCallError):
@@ -467,6 +548,9 @@ class TLSLayer(tunnel.TunnelLayer):
 class ServerTLSLayer(TLSLayer):
     """
     This layer establishes TLS for a single server connection.
+
+    中文说明：负责 mitmproxy 到上游服务器这一侧的 TLS/DTLS。它有时会等待
+    ClientTLSLayer 先解析客户端 ClientHello，以便镜像 SNI/ALPN。
     """
 
     wait_for_clienthello: bool = False
@@ -475,6 +559,12 @@ class ServerTLSLayer(TLSLayer):
         super().__init__(context, conn or context.server)
 
     def start_handshake(self) -> layer.CommandGenerator[None]:
+        """
+        开始或延后上游 TLS 握手。
+
+        eager 模式但 child 是 ClientTLSLayer 时，先等客户端 ClientHello；否则
+        立即触发 tls_start_server 并推进握手。
+        """
         wait_for_clienthello = (
             # if command_to_reply_to is set, we've been instructed to open the connection from the child layer.
             # in that case any potential ClientHello is already parsed (by the ClientTLS child layer).
@@ -494,6 +584,9 @@ class ServerTLSLayer(TLSLayer):
                 yield from self.receive_handshake_data(b"")
 
     def event_to_child(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        等待 ClientHello 期间拦截 child 触发的 OpenConnection，避免重复开连接。
+        """
         if self.wait_for_clienthello:
             for command in super().event_to_child(event):
                 if (
@@ -508,6 +601,9 @@ class ServerTLSLayer(TLSLayer):
             yield from super().event_to_child(event)
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """
+        上游 TLS 握手失败时记录更具体的 server-side 日志。
+        """
         yield commands.Log(f"Server TLS handshake failed. {err}", level=WARNING)
         yield from super().on_handshake_error(err)
 
@@ -530,11 +626,20 @@ class ClientTLSLayer(TLSLayer):
 
     """
 
+    # 中文说明：负责客户端到 mitmproxy 这一侧的 TLS/DTLS。它先缓冲并解析
+    # ClientHello，触发 tls_clienthello hook，然后再根据 hook 决策直通或拦截。
+
     recv_buffer: bytearray
     server_tls_available: bool
     client_hello_parsed: bool = False
 
     def __init__(self, context: context.Context):
+        """
+        初始化客户端 TLS layer。
+
+        如果已经处在 TLS-over-TLS 场景，会清空外层 TLS 元数据，让后续属性表示
+        内层 TLS 会话。
+        """
         if context.client.tls:
             # In the case of TLS-over-TLS, we already have client TLS. As the outer TLS connection between client
             # and proxy isn't that interesting to us, we just unset the attributes here and keep the inner TLS
@@ -557,11 +662,17 @@ class ClientTLSLayer(TLSLayer):
         self.recv_buffer = bytearray()
 
     def start_handshake(self) -> layer.CommandGenerator[None]:
+        """
+        客户端侧不会在 Start 立即握手，而是等待 ClientHello 数据到达。
+        """
         yield from ()
 
     def receive_handshake_data(
         self, data: bytes
     ) -> layer.CommandGenerator[tuple[bool, str | None]]:
+        """
+        缓冲并解析客户端 ClientHello，然后执行直通/先连上游/启动拦截 TLS 的决策。
+        """
         if self.client_hello_parsed:
             return (yield from super().receive_handshake_data(data))
         self.recv_buffer.extend(data)
@@ -628,6 +739,9 @@ class ClientTLSLayer(TLSLayer):
         """
         We often need information from the upstream connection to establish TLS with the client.
         For example, we need to check if the client does ALPN or not.
+
+        中文说明：在需要上游证书或 ALPN 信息时，由客户端侧 TLS layer 主动打开
+        上游连接，让 ServerTLSLayer 先完成握手。
         """
         if not self.server_tls_available:
             return f"No server {self.proto_name} available."
@@ -635,6 +749,9 @@ class ClientTLSLayer(TLSLayer):
         return err
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """
+        客户端 TLS 握手失败时把 OpenSSL 错误翻译成更面向用户的日志。
+        """
         if self.conn.sni:
             dest = self.conn.sni
         else:
@@ -675,6 +792,9 @@ class ClientTLSLayer(TLSLayer):
         self.event_to_child = self.errored  # type: ignore
 
     def errored(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        握手失败后的吞吐状态：丢弃后续 child 事件，避免继续处理破损连接。
+        """
         if self.debug is not None:
             yield commands.Log(
                 f"{self.debug}[tls] Swallowing {event} as handshake failed.", DEBUG

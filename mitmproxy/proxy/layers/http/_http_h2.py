@@ -1,3 +1,12 @@
+"""
+hyper-h2 适配工具。
+
+本模块为 mitmproxy 的 HTTP/2 layer 提供两类辅助：
+- `H2ConnectionLogger` 把 hyper-h2 的调试日志接入 mitmproxy 日志体系。
+- `BufferedH2Connection` 在 hyper-h2 基础上增加发送缓冲，避免流控窗口不足时
+  直接抛错，并保证 DATA 与 trailers 的发送顺序。
+"""
+
 import collections
 import logging
 from typing import NamedTuple
@@ -13,17 +22,26 @@ logger = logging.getLogger(__name__)
 
 
 class H2ConnectionLogger(h2.config.DummyLogger):
+    """
+    hyper-h2 日志适配器。
+
+    调试开启时，HTTP/2 帧/状态变化会通过它带上连接 peername 输出。
+    """
+
     def __init__(self, peername: tuple, conn_type: str):
+        """记录对端地址和连接类型，用于日志前缀。"""
         super().__init__()
         self.peername = peername
         self.conn_type = conn_type
 
     def debug(self, fmtstr, *args):
+        """转发 hyper-h2 debug 日志。"""
         logger.debug(
             f"{self.conn_type} {fmtstr}", *args, extra={"client": self.peername}
         )
 
     def trace(self, fmtstr, *args):
+        """转发 hyper-h2 trace 日志到更低一级 DEBUG。"""
         logger.log(
             logging.DEBUG - 1,
             f"{self.conn_type} {fmtstr}",
@@ -33,6 +51,10 @@ class H2ConnectionLogger(h2.config.DummyLogger):
 
 
 class SendH2Data(NamedTuple):
+    """
+    被流控阻塞时暂存的一段 HTTP/2 DATA。
+    """
+
     data: bytes
     end_stream: bool
 
@@ -42,12 +64,16 @@ class BufferedH2Connection(h2.connection.H2Connection):
     This class wrap's hyper-h2's H2Connection and adds internal send buffers.
 
     To simplify implementation, padding is unsupported.
+
+    中文说明：当单个 stream 或整条连接的流控窗口不足时，`send_data()` 不会
+    失败，而是把剩余 DATA 暂存，等待 WINDOW_UPDATE 后继续发送。
     """
 
     stream_buffers: collections.defaultdict[int, collections.deque[SendH2Data]]
     stream_trailers: dict[int, list[tuple[bytes, bytes]]]
 
     def __init__(self, config: h2.config.H2Configuration):
+        """初始化大窗口设置、发送缓冲区和 trailers 暂存区。"""
         super().__init__(config)
         self.local_settings.initial_window_size = 2**31 - 1
         self.local_settings.max_frame_size = 2**17
@@ -58,6 +84,9 @@ class BufferedH2Connection(h2.connection.H2Connection):
         self.stream_trailers = {}
 
     def initiate_connection(self):
+        """
+        启动 HTTP/2 连接，并把连接级流控窗口扩到最大。
+        """
         super().initiate_connection()
         # We increase the flow-control window for new streams with a setting,
         # but we need to increase the overall connection flow-control window as well.
@@ -104,6 +133,9 @@ class BufferedH2Connection(h2.connection.H2Connection):
                 self.stream_buffers[stream_id].append(SendH2Data(data, end_stream))
 
     def send_trailers(self, stream_id: int, trailers: list[tuple[bytes, bytes]]):
+        """
+        发送 trailers；如果前面还有 DATA 被缓冲，则 trailers 必须排在 DATA 后。
+        """
         if self.stream_buffers.get(stream_id, None):
             # Though trailers are not subject to flow control, we need to queue them and send strictly after data frames
             self.stream_trailers[stream_id] = trailers
@@ -111,15 +143,24 @@ class BufferedH2Connection(h2.connection.H2Connection):
             self.send_headers(stream_id, trailers, end_stream=True)
 
     def end_stream(self, stream_id: int) -> None:
+        """
+        结束 stream；若 trailers 已排队，则由 trailers 的 HEADERS 帧负责结束。
+        """
         if stream_id in self.stream_trailers:
             return  # we already have trailers queued up that will end the stream.
         self.send_data(stream_id, b"", end_stream=True)
 
     def reset_stream(self, stream_id: int, error_code: int = 0) -> None:
+        """重置 stream 前先清理对应发送缓冲。"""
         self.stream_buffers.pop(stream_id, None)
         super().reset_stream(stream_id, error_code)
 
     def receive_data(self, data: bytes):
+        """
+        接收 HTTP/2 帧并响应流控相关事件。
+
+        WINDOW_UPDATE 或 initial window size 变化会触发缓冲数据继续发送。
+        """
         events = super().receive_data(data)
         ret = []
         for event in events:
@@ -145,6 +186,8 @@ class BufferedH2Connection(h2.connection.H2Connection):
     def stream_window_updated(self, stream_id: int) -> bool:
         """
         The window for a specific stream has updated. Send as much buffered data as possible.
+
+        中文说明：单个 stream 的窗口更新后，从该 stream 的缓冲队列里尽量发送。
         """
         # If the stream has been reset in the meantime, we just clear the buffer.
         try:
@@ -193,6 +236,9 @@ class BufferedH2Connection(h2.connection.H2Connection):
     def connection_window_updated(self) -> None:
         """
         The connection window has updated. Send data from buffers in a round-robin fashion.
+
+        中文说明：连接级窗口更新后，在多个 stream 的缓冲队列间轮询发送，避免某个
+        stream 长时间独占窗口。
         """
         sent_any_data = True
         while sent_any_data:

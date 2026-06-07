@@ -1,3 +1,17 @@
+"""
+HTTP/3 连接解析与序列化 layer。
+
+本模块使用 aioquic 的 H3 连接对象，把 QUIC stream 事件转换为 mitmproxy
+内部 `HttpEvent`，也把 `HttpEvent` 写回 HTTP/3 stream。HTTP/3 的 headers
+格式与 HTTP/2 很接近，所以复用了 `_http2.py` 中的头部格式化/解析逻辑。
+
+触发点：
+- `events.Start` 发送 H3 控制流等初始化数据。
+- `QuicStreamEvent` 输入时解析 DATA/HEADERS/trailers/stream close。
+- `HttpEvent` 输入时发送 HTTP/3 headers/data/trailers/end 或关闭 stream。
+- `QuicConnectionClosed` 会把错误广播给所有仍打开的 HTTP/3 stream。
+"""
+
 import time
 from abc import abstractmethod
 from typing import assert_never
@@ -44,6 +58,12 @@ from mitmproxy.proxy.utils import expect
 
 
 class Http3Connection(HttpConnection):
+    """
+    HTTP/3 客户端/服务器解析器的公共基类。
+
+    负责在 `LayeredH3Connection` 与 mitmproxy `ReceiveHttp` 事件之间转换。
+    """
+
     h3_conn: LayeredH3Connection
 
     ReceiveData: type[RequestData | ResponseData]
@@ -52,12 +72,16 @@ class Http3Connection(HttpConnection):
     ReceiveTrailers: type[RequestTrailers | ResponseTrailers]
 
     def __init__(self, context: context.Context, conn: connection.Connection):
+        """绑定 QUIC 连接并创建 H3 连接封装。"""
         super().__init__(context, conn)
         self.h3_conn = LayeredH3Connection(
             self.conn, is_client=self.conn is self.context.server
         )
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        HTTP/3 总入口：处理启动、内部 HttpEvent、QUIC stream 事件和连接关闭。
+        """
         if isinstance(event, events.Start):
             yield from self.h3_conn.transmit()
 
@@ -212,23 +236,37 @@ class Http3Connection(HttpConnection):
 
     @expect(HttpEvent, QuicStreamEvent, QuicConnectionClosed)
     def done(self, _) -> layer.CommandGenerator[None]:
+        """连接关闭后的空状态。"""
         yield from ()
 
     @abstractmethod
     def parse_headers(self, event: HeadersReceived) -> RequestHeaders | ResponseHeaders:
+        """由子类按方向把 H3 HEADERS 解析成请求头或响应头事件。"""
         pass  # pragma: no cover
 
 
 class Http3Server(Http3Connection):
+    """
+    面向客户端 QUIC 连接的 HTTP/3 服务端解析器。
+
+    解析客户端请求，并向客户端发送响应。
+    """
+
     ReceiveData = RequestData
     ReceiveEndOfMessage = RequestEndOfMessage
     ReceiveProtocolError = RequestProtocolError
     ReceiveTrailers = RequestTrailers
 
     def __init__(self, context: context.Context):
+        """绑定客户端 QUIC 连接。"""
         super().__init__(context, context.client)
 
     def parse_headers(self, event: HeadersReceived) -> RequestHeaders | ResponseHeaders:
+        """
+        解析 HTTP/3 请求头。
+
+        HTTP/3 请求伪头与 HTTP/2 相同，因此复用 `parse_h2_request_headers()`。
+        """
         # same as HTTP/2
         (
             host,
@@ -257,6 +295,13 @@ class Http3Server(Http3Connection):
 
 
 class Http3Client(Http3Connection):
+    """
+    面向上游服务器 QUIC 连接的 HTTP/3 客户端解析器。
+
+    发送请求、接收响应，并维护外部 stream_id 与本端创建的 QUIC/H3 stream_id
+    之间的映射。
+    """
+
     ReceiveData = ResponseData
     ReceiveEndOfMessage = ResponseEndOfMessage
     ReceiveProtocolError = ResponseProtocolError
@@ -266,11 +311,15 @@ class Http3Client(Http3Connection):
     their_stream_id: dict[int, int]
 
     def __init__(self, context: context.Context):
+        """初始化 HTTP/3 stream id 双向映射。"""
         super().__init__(context, context.server)
         self.our_stream_id = {}
         self.their_stream_id = {}
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        客户端侧事件入口：为外部 stream 分配 H3 stream id，并回写接收事件的 id。
+        """
         # QUIC and HTTP/3 would actually allow for direct stream ID mapping, but since we want
         # to support H2<->H3, we need to translate IDs.
         # NOTE: We always create bidirectional streams, as we can't safely infer unidirectionality.
@@ -288,6 +337,11 @@ class Http3Client(Http3Connection):
             yield cmd
 
     def parse_headers(self, event: HeadersReceived) -> RequestHeaders | ResponseHeaders:
+        """
+        解析 HTTP/3 响应头。
+
+        HTTP/3 响应伪头与 HTTP/2 相同，因此复用 `parse_h2_response_headers()`。
+        """
         # same as HTTP/2
         status_code, headers = parse_h2_response_headers(event.headers)
         response = http.Response(

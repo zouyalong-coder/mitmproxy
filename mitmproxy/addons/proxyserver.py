@@ -192,6 +192,7 @@ class Proxyserver(ServerManager):
         """
         self.connections[connection_id] = handler
         try:
+            # 使用生成器，这里外面 next 拿到的就是注册完成的 connection，直到持有者执行 next/（另一个好像是 send） 才会进入后面的 finally
             yield
         finally:
             del self.connections[connection_id]

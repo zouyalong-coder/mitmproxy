@@ -1,3 +1,16 @@
+"""
+代理模式入口 layer。
+
+本模块定义各种“连接最外层模式”：显式 HTTP 代理、上游 HTTP 代理、反向代理、
+透明代理和 SOCKS5 代理。它们的共同职责是确定目标地址/代理语义，然后把连接
+交给 `NextLayer` 继续判断具体协议。
+
+触发点：
+- `Start`：各模式 layer 开始处理连接。
+- SOCKS5 的 `DataReceived`：按 greet/auth/connect 状态机解析客户端握手。
+- `socks5_auth` hook：收到 SOCKS5 用户名/密码后触发，由 proxyauth 等 addon 校验。
+"""
+
 from __future__ import annotations
 
 import socket
@@ -39,19 +52,40 @@ class HttpProxy(layer.Layer):
 
 
 class HttpUpstreamProxy(layer.Layer):
+    """
+    显式上游 HTTP 代理模式入口。
+
+    中文说明：和 `HttpProxy` 一样先交给 NextLayer，只是后续 HTTP layer 会以
+    upstream proxy 语义处理请求。
+    """
+
     @expect(events.Start)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        `Start` 事件：创建 NextLayer 子层并转交事件。
+        """
         child_layer = layer.NextLayer(self.context)
         self._handle_event = child_layer.handle_event
         yield from child_layer.handle_event(event)
 
 
 class DestinationKnown(layer.Layer, metaclass=ABCMeta):
-    """Base layer for layers that gather connection destination info and then delegate."""
+    """
+    Base layer for layers that gather connection destination info and then delegate.
+
+    中文说明：反向代理、透明代理和 SOCKS5 都会先确定 `context.server.address`，
+    再调用 `finish_start()` 进入下一层。
+    """
 
     child_layer: layer.Layer
 
     def finish_start(self) -> layer.CommandGenerator[str | None]:
+        """
+        在目标地址已知后启动下一层。
+
+        eager 连接策略下会先打开上游 TCP 连接；随后创建的 child layer 会收到
+        `Start` 事件。
+        """
         if (
             self.context.options.connection_strategy == "eager"
             and self.context.server.address
@@ -68,12 +102,25 @@ class DestinationKnown(layer.Layer, metaclass=ABCMeta):
 
     @expect(events.DataReceived, events.ConnectionClosed)
     def done(self, _) -> layer.CommandGenerator[None]:
+        """
+        结束状态：目标地址解析失败或连接关闭后忽略后续事件。
+        """
         yield from ()
 
 
 class ReverseProxy(DestinationKnown):
+    """
+    反向代理模式入口。
+
+    中文说明：目标地址直接来自 `ReverseMode` 配置，因此 Start 时就能设置
+    `context.server.address` 和必要的 SNI。
+    """
+
     @expect(events.Start)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        `Start` 事件：设置反向代理目标并交给 NextLayer。
+        """
         spec = self.context.client.proxy_mode
         assert isinstance(spec, ReverseMode)
         self.context.server.address = spec.address
@@ -96,8 +143,17 @@ class ReverseProxy(DestinationKnown):
 
 
 class TransparentProxy(DestinationKnown):
+    """
+    透明代理模式入口。
+
+    中文说明：目标地址应在平台透明代理代码中提前写入 `context.server.address`。
+    """
+
     @expect(events.Start)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        `Start` 事件：确认目标地址存在后交给 NextLayer。
+        """
         assert self.context.server.address, "No server address set."
         self.child_layer = layer.NextLayer(self.context)
         err = yield from self.finish_start()
@@ -122,6 +178,12 @@ SOCKS5_REP_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
 
 @dataclass
 class Socks5AuthData:
+    """
+    SOCKS5 用户名/密码认证 hook 携带的数据。
+
+    addon 通过把 `valid` 设为 True 来表示认证通过。
+    """
+
     client_conn: connection.Client
     username: str
     password: str
@@ -134,12 +196,22 @@ class Socks5AuthHook(StartHook):
     Mitmproxy has received username/password SOCKS5 credentials.
 
     This hook decides whether they are valid by setting `data.valid`.
+
+    中文说明：对应 addon 里的 `socks5_auth(data)`，在 SOCKS5 子协商拿到用户名和
+    密码后触发。
     """
 
     data: Socks5AuthData
 
 
 class Socks5Proxy(DestinationKnown):
+    """
+    SOCKS5 代理模式入口。
+
+    中文说明：维护 SOCKS5 greet/auth/connect 三段状态机，解析出目标 host/port
+    后设置 `context.server.address`，再交给 NextLayer。
+    """
+
     buf: bytes = b""
 
     def socks_err(
@@ -147,6 +219,9 @@ class Socks5Proxy(DestinationKnown):
         message: str,
         reply_code: int | None = None,
     ) -> layer.CommandGenerator[None]:
+        """
+        向客户端发送 SOCKS5 错误响应、关闭连接并记录日志。
+        """
         if reply_code is not None:
             yield commands.SendData(
                 self.context.client,
@@ -159,6 +234,9 @@ class Socks5Proxy(DestinationKnown):
 
     @expect(events.Start, events.DataReceived, events.ConnectionClosed)
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        SOCKS5 总事件入口：累计客户端数据并推进当前状态函数。
+        """
         if isinstance(event, events.Start):
             pass
         elif isinstance(event, events.DataReceived):
@@ -174,6 +252,9 @@ class Socks5Proxy(DestinationKnown):
             raise AssertionError(f"Unknown event: {event}")
 
     def state_greet(self) -> layer.CommandGenerator[None]:
+        """
+        SOCKS5 greeting 状态：协商认证方法。
+        """
         if len(self.buf) < 2:
             return
 
@@ -216,6 +297,9 @@ class Socks5Proxy(DestinationKnown):
     state: Callable[..., layer.CommandGenerator[None]] = state_greet
 
     def state_auth(self) -> layer.CommandGenerator[None]:
+        """
+        SOCKS5 用户名/密码认证状态：解析凭据并触发 socks5_auth hook。
+        """
         if len(self.buf) < 3:
             return
 
@@ -245,6 +329,9 @@ class Socks5Proxy(DestinationKnown):
         yield from self.state()
 
     def state_connect(self) -> layer.CommandGenerator[None]:
+        """
+        SOCKS5 CONNECT 状态：解析目标地址并启动后续协议 layer。
+        """
         # Parse Connect Request
         if len(self.buf) < 5:
             return

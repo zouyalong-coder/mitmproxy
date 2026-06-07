@@ -2,6 +2,11 @@
 This module contains a very terrible QUIC client hello parser.
 
 Nothing is more permanent than a temporary solution!
+
+中文说明：mitmproxy 需要在真正建立 aioquic 服务器连接前获知客户端 QUIC
+ClientHello 中的 SNI/ALPN。这里通过临时接管 aioquic TLS 处理函数，在解析到
+ClientHello 时用异常把原始 TLS ClientHello 抛出来，再复用 mitmproxy 的
+`ClientHello` 解析器。
 """
 
 from __future__ import annotations
@@ -24,7 +29,11 @@ from mitmproxy.tls import ClientHello
 
 @dataclass
 class QuicClientHello(Exception):
-    """Helper error only used in `quic_parse_client_hello_from_datagrams`."""
+    """
+    Helper error only used in `quic_parse_client_hello_from_datagrams`.
+
+    中文说明：用异常短路 aioquic 的握手流程，把 ClientHello 原始字节带出来。
+    """
 
     data: bytes
 
@@ -45,6 +54,9 @@ def quic_parse_client_hello_from_datagrams(
 
     Raises:
         - A ValueError, if the passed ClientHello is invalid
+
+    中文说明：触发点是客户端 QUIC Initial datagram 到达。QUIC ClientHello 可能
+    跨多个 datagram 分片，因此输入是 datagram 列表；如果还不完整则返回 None。
     """
 
     # ensure the first packet is indeed the initial one
@@ -71,6 +83,9 @@ def quic_parse_client_hello_from_datagrams(
         handshake_buf: QuicBuffer,
         onertt_buf: QuicBuffer,
     ) -> None:
+        """
+        替换 aioquic 的 server hello 处理函数，截获 TLS ClientHello。
+        """
         assert input_buf.pull_uint8() == HandshakeType.CLIENT_HELLO
         length = 0
         for b in input_buf.pull_bytes(3):
@@ -79,6 +94,9 @@ def quic_parse_client_hello_from_datagrams(
         raise QuicClientHello(input_buf.data_slice(offset, offset + length))
 
     def initialize_replacement(peer_cid: bytes) -> None:
+        """
+        在 aioquic 初始化完成后替换 TLS ClientHello handler。
+        """
         try:
             return _initialize(peer_cid)
         finally:

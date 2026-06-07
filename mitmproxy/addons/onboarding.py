@@ -17,6 +17,8 @@ APP_HOST = "mitm.it"
 class Onboarding(asgiapp.WSGIApp):
     """
     将 `mitmproxy.addons.onboardingapp` 作为 WSGI 应用挂到 mitmproxy 内部。
+
+    用户引导页的 http 服务。
     """
     name = "onboarding"
 

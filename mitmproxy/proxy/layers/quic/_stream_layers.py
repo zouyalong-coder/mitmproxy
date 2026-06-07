@@ -2,6 +2,17 @@
 This module contains the client and server proxy layers for QUIC streams
 which decrypt and encrypt traffic. Decrypted stream data is then forwarded
 to either the raw layers, or the HTTP/3 client in ../http/_http3.py.
+
+中文说明：本模块是 QUIC 解密/加密状态机。它接收 UDP datagram，交给 aioquic
+推进握手和 stream 状态，再把解密后的 QUIC stream 事件分发给 HTTP/3 或 raw
+QUIC 子层；子层发出的 QUIC 命令再转换回 aioquic 操作。
+
+触发点：
+- 客户端侧收到 QUIC Initial datagram 后解析 ClientHello，并触发
+  `tls_clienthello` 与 `quic_start_client`。
+- 服务器侧连接上游 QUIC 前触发 `quic_start_server`。
+- 握手成功触发通用 TLS established hook，失败触发 TLS failed hook。
+- 握手后 `DataReceived` 会转换为 QUIC stream/datagram/close 事件。
 """
 
 from __future__ import annotations
@@ -59,6 +70,14 @@ SUPPORTED_QUIC_VERSIONS_SERVER = QuicConfiguration(is_client=False).supported_ve
 
 
 class QuicLayer(tunnel.TunnelLayer):
+    """
+    QUIC client/server layer 的公共基类。
+
+    它继承 `TunnelLayer`，把 QUIC 握手视作隧道建立过程；握手完成后，
+    解密出的数据会交给 child layer，child layer 发出的 stream 命令会回写到
+    aioquic。
+    """
+
     quic: QuicConnection | None = None
     tls: QuicTlsSettings | None = None
 
@@ -68,6 +87,7 @@ class QuicLayer(tunnel.TunnelLayer):
         conn: connection.Connection,
         time: Callable[[], float] | None,
     ) -> None:
+        """初始化 QUIC 隧道、child layer、定时器表，并标记连接启用 TLS。"""
         super().__init__(context, tunnel_connection=conn, conn=conn)
         self.child_layer = layer.NextLayer(self.context, ask_on_start=True)
         self._time = time or ctx.master.event_loop.time
@@ -75,6 +95,12 @@ class QuicLayer(tunnel.TunnelLayer):
         conn.tls = True
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        处理 QUIC 定时器唤醒，并把其他事件交给 TunnelLayer。
+
+        aioquic 依赖定时器重传/关闭连接，这里把 `Wakeup` 转成空数据事件，
+        让 TunnelLayer 的握手/数据路径继续推进。
+        """
         if isinstance(event, events.Wakeup) and event.command in self._wakeup_commands:
             # TunnelLayer has no understanding of wakeups, so we turn this into an empty DataReceived event
             # which TunnelLayer recognizes as belonging to our connection.
@@ -91,6 +117,9 @@ class QuicLayer(tunnel.TunnelLayer):
             yield from super()._handle_event(event)
 
     def event_to_child(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        将解密后的 QUIC 事件送入子层，并统一发送 aioquic 累积的 datagram。
+        """
         # the parent will call _handle_command multiple times, we transmit cumulative afterwards
         # this will reduce the number of sends, especially if data=b"" and end_stream=True
         yield from super().event_to_child(event)
@@ -100,7 +129,12 @@ class QuicLayer(tunnel.TunnelLayer):
     def _handle_command(
         self, command: commands.Command
     ) -> layer.CommandGenerator[None]:
-        """Turns stream commands into aioquic connection invocations."""
+        """
+        Turns stream commands into aioquic connection invocations.
+
+        中文说明：处理 Send/Reset/StopSending 这类 stream 命令；非 QUIC stream
+        命令继续交给 TunnelLayer。
+        """
         if isinstance(command, QuicStreamCommand) and command.connection is self.conn:
             assert self.quic
             if isinstance(command, SendQuicStreamData):
@@ -129,7 +163,12 @@ class QuicLayer(tunnel.TunnelLayer):
     def start_tls(
         self, original_destination_connection_id: bytes | None
     ) -> layer.CommandGenerator[None]:
-        """Initiates the aioquic connection."""
+        """
+        Initiates the aioquic connection.
+
+        中文说明：触发 quic_start_client/server hook 获取 TLS 设置，创建
+        aioquic `QuicConnection`。作为客户端连接上游时，会主动调用 connect。
+        """
 
         # must only be called if QUIC is uninitialized
         assert not self.quic
@@ -166,7 +205,12 @@ class QuicLayer(tunnel.TunnelLayer):
             yield from self.tls_interact()
 
     def tls_interact(self) -> layer.CommandGenerator[None]:
-        """Retrieves all pending outgoing packets from aioquic and sends the data."""
+        """
+        Retrieves all pending outgoing packets from aioquic and sends the data.
+
+        中文说明：从 aioquic 拉取待发送 UDP datagram，并根据 aioquic timer
+        注册下一次唤醒。
+        """
 
         # send all queued datagrams
         assert self.quic
@@ -191,6 +235,12 @@ class QuicLayer(tunnel.TunnelLayer):
     def receive_handshake_data(
         self, data: bytes
     ) -> layer.CommandGenerator[tuple[bool, str | None]]:
+        """
+        处理握手阶段的 QUIC datagram。
+
+        返回 `(True, None)` 表示握手完成；返回 `(False, err)` 表示握手失败；
+        返回 `(False, None)` 表示还需要更多 datagram。
+        """
         assert self.quic
 
         # forward incoming data to aioquic
@@ -252,6 +302,9 @@ class QuicLayer(tunnel.TunnelLayer):
         return False, None
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """
+        握手失败时记录连接错误并触发 TLS failed hook。
+        """
         self.conn.error = err
         if self.conn is self.context.client:
             yield TlsFailedClientHook(
@@ -264,6 +317,12 @@ class QuicLayer(tunnel.TunnelLayer):
         yield from super().on_handshake_error(err)
 
     def receive_data(self, data: bytes) -> layer.CommandGenerator[None]:
+        """
+        处理握手完成后的 QUIC datagram。
+
+        aioquic 产出的 stream data/reset/stop sending/datagram/close 事件会被转换为
+        mitmproxy 的 QUIC 事件并分发给子 layer。
+        """
         assert self.quic
 
         # forward incoming data to aioquic
@@ -321,6 +380,9 @@ class QuicLayer(tunnel.TunnelLayer):
         yield from self.tls_interact()
 
     def receive_close(self) -> layer.CommandGenerator[None]:
+        """
+        底层 UDP 连接关闭时，向子层广播 QUIC 连接关闭事件。
+        """
         assert self.quic
         # if `_close_event` is not set, the underlying connection has been closed
         # we turn this into a QUIC close event as well
@@ -337,6 +399,9 @@ class QuicLayer(tunnel.TunnelLayer):
         )
 
     def send_data(self, data: bytes) -> layer.CommandGenerator[None]:
+        """
+        发送非 stream 数据，当前映射为 QUIC DATAGRAM frame。
+        """
         # non-stream data uses datagram frames
         assert self.quic
         if data:
@@ -346,6 +411,9 @@ class QuicLayer(tunnel.TunnelLayer):
     def send_close(
         self, command: commands.CloseConnection
     ) -> layer.CommandGenerator[None]:
+        """
+        按 QUIC 语义关闭连接，再关闭底层 UDP 连接。
+        """
         # properly close the QUIC connection
         if self.quic:
             if isinstance(command, CloseQuicConnection):
@@ -361,6 +429,9 @@ class QuicLayer(tunnel.TunnelLayer):
 class ServerQuicLayer(QuicLayer):
     """
     This layer establishes QUIC for a single server connection.
+
+    中文说明：面向上游服务器连接。它通常由 HTTP/3 或透明代理路径创建，用于
+    mitmproxy 作为 QUIC 客户端连接真实服务器。
     """
 
     wait_for_clienthello: bool = False
@@ -371,9 +442,16 @@ class ServerQuicLayer(QuicLayer):
         conn: connection.Server | None = None,
         time: Callable[[], float] | None = None,
     ):
+        """绑定上游服务器连接；测试可注入 time 函数。"""
         super().__init__(context, conn or context.server, time)
 
     def start_handshake(self) -> layer.CommandGenerator[None]:
+        """
+        启动服务器侧 QUIC 握手。
+
+        如果嵌套在客户端 QUIC layer 下且还没收到客户端 ClientHello，会先等待
+        客户端侧决定 SNI/ALPN 等信息后再连接上游。
+        """
         wait_for_clienthello = not self.command_to_reply_to and isinstance(
             self.child_layer, ClientQuicLayer
         )
@@ -384,6 +462,9 @@ class ServerQuicLayer(QuicLayer):
             yield from self.start_tls(None)
 
     def event_to_child(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        等待客户端 ClientHello 时，暂缓对上游服务器的 OpenConnection 命令。
+        """
         if self.wait_for_clienthello:
             for command in super().event_to_child(event):
                 if (
@@ -397,6 +478,7 @@ class ServerQuicLayer(QuicLayer):
             yield from super().event_to_child(event)
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """记录服务器侧 QUIC 握手失败。"""
         yield commands.Log(f"Server QUIC handshake failed. {err}", level=WARNING)
         yield from super().on_handshake_error(err)
 
@@ -404,6 +486,9 @@ class ServerQuicLayer(QuicLayer):
 class ClientQuicLayer(QuicLayer):
     """
     This layer establishes QUIC on a single client connection.
+
+    中文说明：面向下游客户端连接。它先缓存 QUIC Initial datagram，解析
+    ClientHello 并触发 addon hook，再创建 aioquic 服务端连接与客户端完成握手。
     """
 
     server_tls_available: bool
@@ -413,6 +498,9 @@ class ClientQuicLayer(QuicLayer):
     def __init__(
         self, context: context.Context, time: Callable[[], float] | None = None
     ) -> None:
+        """
+        初始化客户端侧 QUIC layer，并清理可能残留的客户端 TLS 元数据。
+        """
         # same as ClientTLSLayer, we might be nested in some other transport
         if context.client.tls:
             context.client.alpn = None
@@ -432,11 +520,19 @@ class ClientQuicLayer(QuicLayer):
         self.handshake_datagram_buf = []
 
     def start_handshake(self) -> layer.CommandGenerator[None]:
+        """客户端侧握手由首个 QUIC Initial datagram 驱动，这里不主动发送。"""
         yield from ()
 
     def receive_handshake_data(
         self, data: bytes
     ) -> layer.CommandGenerator[tuple[bool, str | None]]:
+        """
+        收集客户端 QUIC Initial，解析 ClientHello，并启动客户端侧 QUIC 握手。
+
+        触发点：客户端 UDP datagram 到达。该方法会处理版本协商、ClientHello
+        提取、`tls_clienthello` hook、可选的 ignore_connection UDP 透传，以及
+        eager 上游 QUIC 建连。
+        """
         if not self.context.options.http3:
             yield commands.Log(
                 f"Swallowing QUIC handshake because HTTP/3 is disabled.", DEBUG
@@ -557,17 +653,22 @@ class ClientQuicLayer(QuicLayer):
         return (yield from super().receive_handshake_data(b""))
 
     def start_server_tls(self) -> layer.CommandGenerator[str | None]:
+        """
+        如有父级 `ServerQuicLayer`，先打开上游 QUIC 连接。
+        """
         if not self.server_tls_available:
             return f"No server QUIC available."
         err = yield commands.OpenConnection(self.context.server)
         return err
 
     def on_handshake_error(self, err: str) -> layer.CommandGenerator[None]:
+        """记录客户端侧 QUIC 握手失败，并让后续事件被静默吞掉。"""
         yield commands.Log(f"Client QUIC handshake failed. {err}", level=WARNING)
         yield from super().on_handshake_error(err)
         self.event_to_child = self.errored  # type: ignore
 
     def errored(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """握手失败后的事件吞噬状态。"""
         if self.debug is not None:
             yield commands.Log(
                 f"{self.debug}[quic] Swallowing {event} as handshake failed.", DEBUG
@@ -575,13 +676,21 @@ class ClientQuicLayer(QuicLayer):
 
 
 class QuicSecretsLogger:
+    """
+    aioquic secrets log 适配器。
+
+    aioquic 期望 file-like 对象；mitmproxy 使用回调记录 master secret。
+    """
+
     logger: tls.MasterSecretLogger
 
     def __init__(self, logger: tls.MasterSecretLogger) -> None:
+        """保存 mitmproxy master secret logger 回调。"""
         super().__init__()
         self.logger = logger
 
     def write(self, s: str) -> int:
+        """把 aioquic 写入的 secret 行转交给 mitmproxy logger。"""
         if s[-1:] == "\n":
             s = s[:-1]
         data = s.encode("ascii")
@@ -589,12 +698,17 @@ class QuicSecretsLogger:
         return len(data) + 1
 
     def flush(self) -> None:
+        """file-like 兼容方法，实际 flush 已在 write 中完成。"""
         # done by the logger during write
         pass
 
 
 def error_code_to_str(error_code: int) -> str:
-    """Returns the corresponding name of the given error code or a string containing its numeric value."""
+    """
+    Returns the corresponding name of the given error code or a string containing its numeric value.
+
+    中文说明：优先按 HTTP/3 错误码解释，再按 QUIC 传输错误码解释。
+    """
 
     try:
         return H3ErrorCode(error_code).name
@@ -606,7 +720,11 @@ def error_code_to_str(error_code: int) -> str:
 
 
 def is_success_error_code(error_code: int) -> bool:
-    """Returns whether the given error code actually indicates no error."""
+    """
+    Returns whether the given error code actually indicates no error.
+
+    中文说明：QUIC NO_ERROR 和 HTTP/3 H3_NO_ERROR 都视为正常关闭。
+    """
 
     return error_code in (QuicErrorCode.NO_ERROR, H3ErrorCode.H3_NO_ERROR)
 
@@ -616,7 +734,11 @@ def tls_settings_to_configuration(
     is_client: bool,
     server_name: str | None = None,
 ) -> QuicConfiguration:
-    """Converts `QuicTlsSettings` to `QuicConfiguration`."""
+    """
+    Converts `QuicTlsSettings` to `QuicConfiguration`.
+
+    中文说明：把 addon 填充的 QUIC TLS 设置转成 aioquic 需要的配置对象。
+    """
 
     return QuicConfiguration(
         alpn_protocols=settings.alpn_protocols,

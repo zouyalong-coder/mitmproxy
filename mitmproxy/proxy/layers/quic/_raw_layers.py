@@ -1,6 +1,16 @@
 """
 This module contains the proxy layers for raw QUIC proxying.
 This is used if we want to speak QUIC, but we do not want to do HTTP.
+
+中文说明：当 QUIC 握手已由 mitmproxy 终止，但上层协议不是 HTTP/3，或者用户
+强制 raw 模式时，本模块把 QUIC stream 映射成类似 TCP 连接的虚拟 client/server
+连接，让既有 TCP/UDP layer 可以复用。
+
+触发点：
+- `RawQuicLayer` 收到 `QuicStreamDataReceived` 时为 stream 创建
+  `QuicStreamLayer`。
+- 子 layer 发出 `SendData`/`CloseConnection`/`OpenConnection` 时会被翻译为
+  QUIC stream data、FIN、STOP_SENDING 或新建对端 stream。
 """
 
 from __future__ import annotations
@@ -31,7 +41,12 @@ from mitmproxy.proxy.layers.udp import UDPLayer
 
 
 class QuicStreamNextLayer(layer.NextLayer):
-    """`NextLayer` variant that callbacks `QuicStreamLayer` after layer decision."""
+    """
+    `NextLayer` variant that callbacks `QuicStreamLayer` after layer decision.
+
+    中文说明：协议识别完成后刷新 flow metadata，把 QUIC stream id 等信息写入
+    TCP/UDP flow。
+    """
 
     def __init__(
         self,
@@ -39,6 +54,7 @@ class QuicStreamNextLayer(layer.NextLayer):
         stream: QuicStreamLayer,
         ask_on_start: bool = False,
     ) -> None:
+        """保存所属 QUIC stream layer，等待协议识别结果。"""
         super().__init__(context, ask_on_start)
         self._stream = stream
         self._layer: layer.Layer | None = None
@@ -49,6 +65,7 @@ class QuicStreamNextLayer(layer.NextLayer):
 
     @layer.setter
     def layer(self, value: layer.Layer | None) -> None:
+        """设置实际子 layer 后刷新 stream 元数据。"""
         self._layer = value
         if self._layer:
             self._stream.refresh_metadata()
@@ -58,6 +75,9 @@ class QuicStreamLayer(layer.Layer):
     """
     Layer for QUIC streams.
     Serves as a marker for NextLayer and keeps track of the connection states.
+
+    中文说明：每个 QUIC stream 对应一个此 layer，它把 stream 双向半关闭状态
+    映射成虚拟 TCP 连接状态，方便下游 TCP/UDP/raw 处理逻辑复用。
     """
 
     client: connection.Client
@@ -70,6 +90,9 @@ class QuicStreamLayer(layer.Layer):
     def __init__(
         self, context: context.Context, force_raw: bool, stream_id: int
     ) -> None:
+        """
+        为单个 QUIC stream 创建虚拟 client/server 连接和子 layer。
+        """
         # we mustn't reuse the client from the QUIC connection, as the state and protocol differs
         self.client = context.client = context.client.copy()
         self.client.transport_protocol = "tcp"
@@ -105,6 +128,9 @@ class QuicStreamLayer(layer.Layer):
         raise AssertionError  # pragma: no cover
 
     def open_server_stream(self, server_stream_id) -> None:
+        """
+        为该逻辑流打开服务器侧 QUIC stream，并更新虚拟服务器连接状态。
+        """
         assert self._server_stream_id is None
         self._server_stream_id = server_stream_id
         self.server.timestamp_start = time.time()
@@ -120,6 +146,11 @@ class QuicStreamLayer(layer.Layer):
         self.refresh_metadata()
 
     def refresh_metadata(self) -> None:
+        """
+        把 QUIC stream 信息写入底层 TCP/UDP flow metadata。
+
+        这些 metadata 便于 UI/addon 判断 stream 方向、是否单向以及两端 stream id。
+        """
         # find the first transport layer
         child_layer: layer.Layer | None = self.child_layer
         while True:
@@ -142,12 +173,18 @@ class QuicStreamLayer(layer.Layer):
             child_layer.flow.metadata["quic_stream_id_server"] = self._server_stream_id
 
     def stream_id(self, client: bool) -> int | None:
+        """
+        返回客户端侧或服务器侧的 QUIC stream id。
+        """
         return self._client_stream_id if client else self._server_stream_id
 
 
 class RawQuicLayer(layer.Layer):
     """
     This layer is responsible for de-multiplexing QUIC streams into an individual layer stack per stream.
+
+    中文说明：QUIC 连接级 raw layer，负责把一个 QUIC 连接上的多个 stream
+    拆成多个独立 `QuicStreamLayer`，并把子层连接命令翻译回 QUIC stream 命令。
     """
 
     force_raw: bool
@@ -171,6 +208,9 @@ class RawQuicLayer(layer.Layer):
     """List containing the next stream ID for all four is_unidirectional/is_client combinations."""
 
     def __init__(self, context: context.Context, force_raw: bool = False) -> None:
+        """
+        初始化 datagram 子层、stream 映射表、连接路由表和 stream id 分配器。
+        """
         super().__init__(context)
         self.force_raw = force_raw
         self.datagram_layer = (
@@ -188,6 +228,9 @@ class RawQuicLayer(layer.Layer):
         self.next_stream_id = [0, 1, 2, 3]
 
     def _handle_event(self, event: events.Event) -> layer.CommandGenerator[None]:
+        """
+        Raw QUIC 总入口：分发 start、命令完成、注入消息、stream 事件和连接关闭。
+        """
         # we treat the datagram layer as child layer, so forward Start
         if isinstance(event, events.Start):
             if self.context.server.timestamp_start is None:
@@ -333,7 +376,11 @@ class RawQuicLayer(layer.Layer):
     def close_stream_layer(
         self, stream_layer: QuicStreamLayer, client: bool
     ) -> layer.CommandGenerator[None]:
-        """Closes the incoming part of a connection."""
+        """
+        Closes the incoming part of a connection.
+
+        中文说明：远端 FIN/RESET 到达后关闭虚拟连接的读方向，并通知子 layer。
+        """
 
         conn = stream_layer.client if client else stream_layer.server
         conn.state &= ~connection.ConnectionState.CAN_READ
@@ -345,7 +392,12 @@ class RawQuicLayer(layer.Layer):
     def event_to_child(
         self, child_layer: layer.Layer, event: events.Event
     ) -> layer.CommandGenerator[None]:
-        """Forwards events to child layers and translates commands."""
+        """
+        Forwards events to child layers and translates commands.
+
+        中文说明：这是 raw QUIC 的命令翻译点，把虚拟 TCP 连接命令转换成
+        QUIC stream 命令，同时记录阻塞命令来源用于回调。
+        """
 
         for command in child_layer.handle_event(event):
             # intercept commands for streams connections
@@ -424,10 +476,14 @@ class RawQuicLayer(layer.Layer):
     def get_next_available_stream_id(
         self, is_client: bool, is_unidirectional: bool = False
     ) -> int:
+        """
+        按 QUIC stream id 编码规则分配下一个 stream id。
+        """
         index = (int(is_unidirectional) << 1) | int(not is_client)
         stream_id = self.next_stream_id[index]
         self.next_stream_id[index] = stream_id + 4
         return stream_id
 
     def done(self, _) -> layer.CommandGenerator[None]:  # pragma: no cover
+        """连接关闭后的空状态。"""
         yield from ()

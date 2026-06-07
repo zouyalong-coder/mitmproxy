@@ -1,3 +1,11 @@
+"""
+QUIC layer 可执行的连接/stream 命令。
+
+上层 HTTP/3 或 raw stream layer 不直接操作 aioquic，而是产出这些命令；
+`QuicLayer` 接收后再转换为 QUIC STREAM、RESET_STREAM、STOP_SENDING 或
+CONNECTION_CLOSE 操作。
+"""
+
 from __future__ import annotations
 
 from mitmproxy import connection
@@ -5,7 +13,11 @@ from mitmproxy.proxy import commands
 
 
 class QuicStreamCommand(commands.ConnectionCommand):
-    """Base class for all QUIC stream commands."""
+    """
+    Base class for all QUIC stream commands.
+
+    中文说明：所有 stream 级命令都指定目标连接和 stream_id。
+    """
 
     stream_id: int
     """The ID of the stream the command was issued for."""
@@ -16,7 +28,11 @@ class QuicStreamCommand(commands.ConnectionCommand):
 
 
 class SendQuicStreamData(QuicStreamCommand):
-    """Command that sends data on a stream."""
+    """
+    Command that sends data on a stream.
+
+    中文说明：由上层请求在 QUIC stream 上发送数据，可选择设置 FIN。
+    """
 
     data: bytes
     """The data which should be sent."""
@@ -41,7 +57,11 @@ class SendQuicStreamData(QuicStreamCommand):
 
 
 class ResetQuicStream(QuicStreamCommand):
-    """Abruptly terminate the sending part of a stream."""
+    """
+    Abruptly terminate the sending part of a stream.
+
+    中文说明：发送 RESET_STREAM，强制终止本端发送方向。
+    """
 
     error_code: int
     """An error code indicating why the stream is being reset."""
@@ -54,7 +74,11 @@ class ResetQuicStream(QuicStreamCommand):
 
 
 class StopSendingQuicStream(QuicStreamCommand):
-    """Request termination of the receiving part of a stream."""
+    """
+    Request termination of the receiving part of a stream.
+
+    中文说明：发送 STOP_SENDING，请求远端停止发送该 stream。
+    """
 
     error_code: int
     """An error code indicating why the stream is being stopped."""
@@ -67,7 +91,11 @@ class StopSendingQuicStream(QuicStreamCommand):
 
 
 class CloseQuicConnection(commands.CloseConnection):
-    """Close a QUIC connection."""
+    """
+    Close a QUIC connection.
+
+    中文说明：关闭 QUIC 连接，并携带 QUIC 错误码、帧类型和原因短语。
+    """
 
     error_code: int
     "The error code which was specified when closing the connection."
